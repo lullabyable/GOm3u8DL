@@ -248,15 +248,15 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 		return fmt.Errorf("fetch encryption keys: %w", err)
 	}
 
-	// 3. Create temp directory
+	// 3. Create temp directory: {outputDir}/{saveName}_tmp/
 	tempDir := req.OutputDir
 	if tempDir == "" {
 		tempDir = "."
 	}
 	if req.SaveName != "" {
-		tempDir = filepath.Join(tempDir, ".tmp_"+req.SaveName)
+		tempDir = filepath.Join(tempDir, req.SaveName+"_tmp")
 	} else {
-		tempDir = filepath.Join(tempDir, ".tmp_download")
+		tempDir = filepath.Join(tempDir, "download_tmp")
 	}
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return fmt.Errorf("create temp dir: %w", err)

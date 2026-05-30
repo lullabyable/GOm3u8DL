@@ -35,8 +35,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		ThreadCount:        8,
 		MaxSpeed:           0,
-		OutputDir:          ".",
-		MergeMode:          int(model.MergeModeBinary),
+		OutputDir:          "/downloads",
+		MergeMode:          int(model.MergeModeTS2MP4),
 		FFmpegPath:         "",
 		DelAfterDone:       false,
 		MuxAfterDone:       false,

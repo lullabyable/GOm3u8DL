@@ -23,11 +23,11 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RetryCount != 3 {
 		t.Errorf("RetryCount = %d, want 3", cfg.RetryCount)
 	}
-	if cfg.OutputDir != "." {
-		t.Errorf("OutputDir = %q, want %q", cfg.OutputDir, ".")
+	if cfg.OutputDir != "/downloads" {
+		t.Errorf("OutputDir = %q, want %q", cfg.OutputDir, "/downloads")
 	}
-	if cfg.MergeMode != int(model.MergeModeBinary) {
-		t.Errorf("MergeMode = %d, want %d", cfg.MergeMode, model.MergeModeBinary)
+	if cfg.MergeMode != int(model.MergeModeTS2MP4) {
+		t.Errorf("MergeMode = %d, want %d", cfg.MergeMode, model.MergeModeTS2MP4)
 	}
 	if cfg.Headers == nil {
 		t.Error("Headers should not be nil")

@@ -28,6 +28,7 @@ type StreamInfo struct {
 	Channels      string
 	Extension     string
 	VideoRange    string // "SDR" / "PQ" / "HLG"
+	Role          string // "main", "alternate", etc.
 	URL           string
 	Playlist      *Playlist
 	SegmentsCount int
