@@ -11,7 +11,7 @@
 | 阶段 | 状态 | 进度 |
 |------|------|------|
 | Phase 1 — 核心 SDK (MVP) | ✅ 已完成 | 100% |
-| Phase 2 — 功能完善 | 🔄 进行中 | ~85% |
+| Phase 2 — 功能完善 | ✅ 已完成 | 100% |
 | Phase 3 — 高级特性 | ⏳ 待开始 | 0% |
 
 ---
@@ -26,7 +26,7 @@
 | model/ | encrypt.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | EncryptInfo / EncryptMethod (7种) |
 | model/ | task.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | TaskStatus (9种状态) + String() |
 | model/ | result.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | DownloadResult + DownloadRequest + MergeMode + AutoSelectRule |
-| m3u8dl/ | engine.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | Engine 框架 |
+| m3u8dl/ | engine.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | Engine 完整实现 (GetStreams + Download + HLS/DASH 自动检测) |
 | m3u8dl/ | options.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | Options + 6 个 Option 函数 |
 | m3u8dl/ | events.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | EventHandler + EventHandlerFunc + 3种事件 |
 | parser/hls/ | extractor.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | HLS M3U8 解析 (master + media playlist) |
@@ -38,11 +38,11 @@
 | downloader/ | manager.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 并发下载编排 (worker pool) |
 | downloader/ | progress.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 进度追踪器 (速度/ETA/百分比) |
 | merge/ | binary.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 纯 Go 二进制拼接 + init segment 支持 |
-| cmd/m3u8dl/ | main.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | CLI 入口 |
+| cmd/m3u8dl/ | main.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | CLI 入口 (交互式流选择 + 进度条 + 自动检测) |
 
 ---
 
-## Phase 2 — 功能完善 🔄 进行中
+## Phase 2 — 功能完善 ✅ 已完成
 
 | 模块 | 文件 | 状态 | 测试 | 提交日期 | 备注 |
 |------|------|------|------|---------|------|
@@ -57,7 +57,7 @@
 | merge/ | ts2mp4.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | TS→MP4 remux (纯 Go, PAT/PMT/PES 解析 + fMP4 输出) |
 | merge/ | fmp4.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | fragmented MP4 合并 (init+moof+mdat 重写) |
 | downloader/ | manager.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 多任务并发管理 (TaskManager) |
-| cmd/m3u8dl/ | main.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | CLI 完善 (交互式选择 + 进度条 + 自动检测) |
+| cmd/m3u8dl/ | main.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | CLI 完善 (交互式流选择 + 进度条 + 自动检测) |
 
 ---
 
@@ -84,7 +84,9 @@
 | 2026-05-30 | `3e2fa00` | feat: Phase 1 完成 — ChaCha20 + downloader(3文件) + merge + CLI |
 | 2026-05-30 | (本次) | feat: Phase 2 进展 — DASH解析器 + MP4解析器 + 字幕(WebVTT/TTML) + 断点续传 |
 | 2026-05-30 | (本次) | feat: CENC 解密 + 字幕轨提取 (mp4) |
-| 2026-05-30 | (本次) | feat: TS→MP4 remux + fMP4 merge (纯 Go, 35+测试) |
+| 2026-05-30 | `f3a8747` | feat: 多任务管理器 + CLI 增强 + Engine 实现 |
+| 2026-05-30 | `c519d12` | feat: CENC 解密 + 字幕轨提取 (mp4) |
+| 2026-05-30 | `13345ba` | feat: TS→MP4 remux + fMP4 merge (纯 Go) |
 
 ---
 
