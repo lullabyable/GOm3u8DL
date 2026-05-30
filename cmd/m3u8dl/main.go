@@ -128,14 +128,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Stream selection: -sv filter or interactive
+	// Stream selection: -sv filter or auto-select highest quality
 	var selected *model.StreamInfo
 	if svSelect != "" {
 		selected = selectStreamByFilter(streams, svSelect)
-	} else if len(streams) == 1 {
-		selected = &streams[0]
 	} else {
-		selected = selectStreamInteractive(streams)
+		// Auto-select: pick highest bandwidth video stream
+		for i := range streams {
+			if streams[i].MediaType == model.MediaTypeVideo {
+				if selected == nil || streams[i].Bandwidth > selected.Bandwidth {
+					selected = &streams[i]
+				}
+			}
+		}
+		if selected == nil {
+			selected = &streams[0]
+		}
 	}
 
 	if selected == nil {
@@ -199,95 +207,6 @@ func main() {
 	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
 	outputPath := buildOutputPath(outputDir, saveName, mode)
 	fmt.Printf("Done! Output: %s\n", outputPath)
-}
-
-// selectStreamInteractive displays streams and lets the user choose.
-func selectStreamInteractive(streams []model.StreamInfo) *model.StreamInfo {
-	// Group by media type
-	videoStreams := make([]model.StreamInfo, 0)
-	audioStreams := make([]model.StreamInfo, 0)
-	subStreams := make([]model.StreamInfo, 0)
-
-	for _, s := range streams {
-		switch s.MediaType {
-		case model.MediaTypeVideo:
-			videoStreams = append(videoStreams, s)
-		case model.MediaTypeAudio:
-			audioStreams = append(audioStreams, s)
-		case model.MediaTypeSubtitles:
-			subStreams = append(subStreams, s)
-		default:
-			videoStreams = append(videoStreams, s)
-		}
-	}
-
-	// Sort video streams by bandwidth (highest first)
-	sort.Slice(videoStreams, func(i, j int) bool {
-		return videoStreams[i].Bandwidth > videoStreams[j].Bandwidth
-	})
-
-	fmt.Println("\nAvailable streams:")
-	fmt.Println(strings.Repeat("─", 72))
-
-	allStreams := make([]model.StreamInfo, 0)
-	idx := 1
-
-	if len(videoStreams) > 0 {
-		fmt.Println("  Video:")
-		for _, s := range videoStreams {
-			segInfo := ""
-			if s.SegmentsCount > 0 {
-				segInfo = fmt.Sprintf(" [%d segs]", s.SegmentsCount)
-			}
-			fmt.Printf("    [%d] %-12s %-16s %s%s\n",
-				idx, s.Name, s.Resolution, s.FormatBandwidth(), segInfo)
-			allStreams = append(allStreams, s)
-			idx++
-		}
-	}
-
-	if len(audioStreams) > 0 {
-		fmt.Println("  Audio:")
-		for _, s := range audioStreams {
-			lang := s.Language
-			if lang == "" {
-				lang = "unknown"
-			}
-			fmt.Printf("    [%d] %-12s %-16s %s\n", idx, s.Name, lang, s.GroupID)
-			allStreams = append(allStreams, s)
-			idx++
-		}
-	}
-
-	if len(subStreams) > 0 {
-		fmt.Println("  Subtitles:")
-		for _, s := range subStreams {
-			lang := s.Language
-			if lang == "" {
-				lang = "unknown"
-			}
-			fmt.Printf("    [%d] %-12s %-16s\n", idx, s.Name, lang)
-			allStreams = append(subStreams, s)
-			idx++
-		}
-	}
-
-	fmt.Println(strings.Repeat("─", 72))
-	fmt.Printf("Select stream [1-%d] (default: 1): ", len(allStreams))
-
-	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-
-	choice := 1
-	if input != "" {
-		if n, err := fmt.Sscanf(input, "%d", &choice); n != 1 || err != nil || choice < 1 || choice > len(allStreams) {
-			fmt.Fprintf(os.Stderr, "Invalid choice: %s\n", input)
-			return nil
-		}
-	}
-
-	return &allStreams[choice-1]
 }
 
 // printProgressBar renders a single-line progress bar.
