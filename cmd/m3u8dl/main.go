@@ -290,38 +290,60 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	defer os.RemoveAll(audioResult.TempDir)
 	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
 
-	// Detect segment format and mux accordingly
+	// Mux according to user's merge mode
 	outputPath := filepath.Join(outputDir, saveName+".mp4")
-	fmt.Fprintf(os.Stderr, "Muxing %d video + %d audio segments → %s\n",
-		len(videoResult.SegmentPaths), len(audioResult.SegmentPaths), outputPath)
+	fmt.Fprintf(os.Stderr, "Muxing %d video + %d audio segments → %s (%s)\n",
+		len(videoResult.SegmentPaths), len(audioResult.SegmentPaths),
+		outputPath, mergeModeStr(mode))
 
 	isTSSegments := isTSFormat(videoResult.SegmentPaths)
 
 	var muxErr error
-	switch {
-	case isTSSegments:
-		// TS segments → pure Go TS muxer
-		muxErr = merge.MuxSeparateTSStreams(
-			videoResult.SegmentPaths, audioResult.SegmentPaths,
-			outputPath)
-	case mode == model.MergeModeTS2MP4 || mode == model.MergeModeFMP4:
-		// fMP4 segments → pure Go fMP4 muxer
+	switch mode {
+	case model.MergeModeTS2MP4:
+		if isTSSegments {
+			// TS → 解析PES → 直接输出fMP4 (纯Go)
+			muxErr = merge.MuxSeparateTSStreams(
+				videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
+		} else {
+			// fMP4 → 合并moov+moof → 输出fMP4 (纯Go)
+			muxErr = merge.MuxFMP4FromSegments(
+				videoResult.InitPath, audioResult.InitPath,
+				videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
+		}
+
+	case model.MergeModeFMP4:
+		// fMP4 → 合并moov+moof → 输出fMP4 (纯Go)
 		muxErr = merge.MuxFMP4FromSegments(
 			videoResult.InitPath, audioResult.InitPath,
-			videoResult.SegmentPaths, audioResult.SegmentPaths,
-			outputPath)
-	default:
-		// Try pure Go first, fallback to ffmpeg
-		muxErr = merge.MuxFMP4FromSegments(
-			videoResult.InitPath, audioResult.InitPath,
-			videoResult.SegmentPaths, audioResult.SegmentPaths,
-			outputPath)
-		if muxErr != nil {
+			videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
+
+	case model.MergeModeFFmpeg:
+		// 用ffmpeg混流
+		if isTSSegments {
+			// TS先各自合并再ffmpeg混流
+			videoMerged := filepath.Join(videoResult.TempDir, "video_merged.ts")
+			audioMerged := filepath.Join(audioResult.TempDir, "audio_merged.ts")
+			merge.BinaryMerge(videoResult.SegmentPaths, videoMerged)
+			merge.BinaryMerge(audioResult.SegmentPaths, audioMerged)
+			muxErr = merge.FFmpegMuxAV(videoMerged, audioMerged, outputPath, "ffmpeg")
+		} else {
 			videoMerged := filepath.Join(videoResult.TempDir, "video_merged.mp4")
 			audioMerged := filepath.Join(audioResult.TempDir, "audio_merged.mp4")
 			merge.BinaryMerge(videoResult.SegmentPaths, videoMerged)
 			merge.BinaryMerge(audioResult.SegmentPaths, audioMerged)
 			muxErr = merge.FFmpegMuxAV(videoMerged, audioMerged, outputPath, "ffmpeg")
+		}
+
+	default: // binary
+		if isTSSegments {
+			// TS → 直接转fMP4 (纯Go, binary模式下也输出mp4因为分离流无法用纯ts)
+			muxErr = merge.MuxSeparateTSStreams(
+				videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
+		} else {
+			muxErr = merge.MuxFMP4FromSegments(
+				videoResult.InitPath, audioResult.InitPath,
+				videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
 		}
 	}
 
@@ -417,6 +439,21 @@ func formatETA(seconds float64) string {
 		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 	}
 	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+func mergeModeStr(m model.MergeMode) string {
+	switch m {
+	case model.MergeModeBinary:
+		return "binary"
+	case model.MergeModeTS2MP4:
+		return "ts2mp4"
+	case model.MergeModeFMP4:
+		return "fmp4"
+	case model.MergeModeFFmpeg:
+		return "ffmpeg"
+	default:
+		return "unknown"
+	}
 }
 
 // isTSFormat checks if segment files are MPEG-TS format by reading the first bytes.
@@ -791,6 +828,7 @@ func buildOutputPath(dir, name string, mode model.MergeMode) string {
 	}
 }
 
+// logLevelStr returns a string representation of a log level.
 func logLevelStr(level m3u8dl.LogLevel) string {
 	switch level {
 	case m3u8dl.LogDebug:
