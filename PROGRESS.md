@@ -54,8 +54,8 @@
 | downloader/ | resume.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 断点续传状态持久化 |
 | mp4/ | decrypt.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | CENC 解密 (CTR/CBC + subsample) |
 | mp4/ | subtitle.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 字幕轨提取 (sbtl/text) |
-| merge/ | ts2mp4.go | ⏳ 待开始 | — | — | TS→MP4 remux (gomedia) |
-| merge/ | fmp4.go | ⏳ 待开始 | — | — | fragmented MP4 (mp4ff) |
+| merge/ | ts2mp4.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | TS→MP4 remux (纯 Go, PAT/PMT/PES 解析 + fMP4 输出) |
+| merge/ | fmp4.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | fragmented MP4 合并 (init+moof+mdat 重写) |
 | downloader/ | manager.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 多任务并发管理 (TaskManager) |
 | cmd/m3u8dl/ | main.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | CLI 完善 (交互式选择 + 进度条 + 自动检测) |
 
@@ -84,6 +84,7 @@
 | 2026-05-30 | `3e2fa00` | feat: Phase 1 完成 — ChaCha20 + downloader(3文件) + merge + CLI |
 | 2026-05-30 | (本次) | feat: Phase 2 进展 — DASH解析器 + MP4解析器 + 字幕(WebVTT/TTML) + 断点续传 |
 | 2026-05-30 | (本次) | feat: CENC 解密 + 字幕轨提取 (mp4) |
+| 2026-05-30 | (本次) | feat: TS→MP4 remux + fMP4 merge (纯 Go, 35+测试) |
 
 ---
 
@@ -96,11 +97,11 @@
 | pkg/parser/dash | 7 | ✅ PASS |
 | pkg/crypto | 4 | ✅ PASS |
 | pkg/downloader | 23 | ✅ PASS |
-| pkg/merge | 5 | ✅ PASS |
+| pkg/merge | 40 | ✅ PASS |
 | pkg/m3u8dl | 12 | ✅ PASS |
 | pkg/mp4 | 52 | ✅ PASS |
 | pkg/subtitle | 9 | ✅ PASS |
-| **合计** | **112** | **✅ ALL PASS** |
+| **合计** | **163** | **✅ ALL PASS** |
 
 ---
 

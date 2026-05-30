@@ -104,27 +104,47 @@ func TestParsePAT(t *testing.T) {
 }
 
 func TestParsePTS(t *testing.T) {
-	// PTS = 90000 (1 second at 90kHz)
-	// Encoding: marker(4 bits '0010') + PTS[32..30](3 bits) + marker(1) + PTS[29..15](15 bits) + marker(1) + PTS[14..0](15 bits) + marker(1)
-	pts := int64(90000)
-	data := make([]byte, 5)
-	data[0] = 0x21 | byte((pts>>29)&0x06) // '0010' + PTS[32:30] + marker
-	data[1] = byte((pts >> 22) & 0xFF)    // PTS[29:22]
-	data[2] = byte((pts >> 14) & 0xFF) | 0x01 // PTS[21:15] + marker
-	data[3] = byte((pts >> 7) & 0xFF)     // PTS[14:7]
-	data[4] = byte((pts << 1) & 0xFF) | 0x01  // PTS[6:0] + marker
-
+	// PTS = 90000
+	// PTS[32:30]=0, PTS[29:22]=0, PTS[21:15]=2, PTS[14:7]=191, PTS[6:0]=16
+	data := []byte{0x21, 0x00, 0x05, 0xBF, 0x21}
 	parsed := parsePTS(data)
-	if parsed != pts {
-		t.Errorf("parsePTS = %d, want %d", parsed, pts)
+	if parsed != 90000 {
+		t.Errorf("parsePTS = %d, want 90000", parsed)
 	}
 }
 
 func TestParsePTSZero(t *testing.T) {
+	// PTS=0: all PTS bits zero, marker bits set
 	data := []byte{0x21, 0x00, 0x01, 0x00, 0x01}
 	parsed := parsePTS(data)
 	if parsed != 0 {
 		t.Errorf("parsePTS(zero) = %d, want 0", parsed)
+	}
+}
+
+func TestParsePTS90000(t *testing.T) {
+	// PTS=90000: 90000 = 0x15F90
+	// Bits: 000000000000000101011111100100000 (33 bits)
+	// Split: [32:30]=000 [29:15]=000000000010101 [14:0]=111110010000000
+	data := []byte{
+		0x21,                   // 0010 + PTS[32:30]=000 + marker=1
+		0x00,                   // PTS[29:22]=00000000
+		0x01 | 0x5D,           // PTS[21:15]=0000101 + marker=1 → 0x5D  wait...
+		0x20, 0x01,
+	}
+	_ = data
+	// Just verify roundtrip with known encoding
+	pts := int64(90000)
+	enc := make([]byte, 5)
+	enc[0] = 0x20 | byte((pts>>29)&0x0E) | 0x01
+	enc[1] = byte((pts >> 22) & 0xFF)
+	enc[2] = byte((pts>>14)&0xFE) | 0x01
+	enc[3] = byte((pts >> 7) & 0xFF)
+	enc[4] = byte((pts<<1)&0xFE) | 0x01
+
+	parsed := parsePTS(enc)
+	if parsed != pts {
+		t.Errorf("parsePTS(%d) = %d", pts, parsed)
 	}
 }
 
@@ -441,93 +461,107 @@ func TestTS2MP4RemuxMultipleFiles(t *testing.T) {
 func buildMinimalTS() []byte {
 	var buf bytes.Buffer
 
-	// PAT packet
+	// PAT packet (PID=0)
 	pat := make([]byte, 188)
 	pat[0] = 0x47
 	pat[1] = 0x40 // payload_unit_start=1, PID=0 (PAT)
 	pat[2] = 0x00
-	pat[3] = 0x10 // adaptation_field_control=01, continuity=0
-	// PAT payload
-	pat[4] = 0x00 // pointer
-	pat[5] = 0x00 // table_id
-	pat[6] = 0xB0 // section_syntax_indicator=1, reserved=11
-	pat[7] = 0x0D // section_length = 13
-	pat[8] = 0x00 // transport_stream_id high
-	pat[9] = 0x01 // transport_stream_id low
-	pat[10] = 0xC1 // reserved, version=0, current
+	pat[3] = 0x10 // adaptation_field_control=01 (payload only), continuity=0
+	// PAT payload starts at byte 4
+	// pointer byte
+	pat[4] = 0x00
+	// PAT table starts at byte 5
+	pat[5] = 0x00 // table_id = 0 (PAT)
+	pat[6] = 0xB0 // section_syntax_indicator=1, '0', reserved=11
+	pat[7] = 0x0D // section_length = 13 (5 + 4 program + 4 CRC)
+	pat[8] = 0x00  // transport_stream_id high
+	pat[9] = 0x01  // transport_stream_id low
+	pat[10] = 0xC1 // reserved=11, version=0, current_next=1
 	pat[11] = 0x00 // section_number
 	pat[12] = 0x00 // last_section_number
 	// Program entry: program_number=1, PMT PID=4096
-	pat[13] = 0x00
-	pat[14] = 0x01
-	pat[15] = 0xE0 | byte(4096>>8) // reserved + PID high
-	pat[16] = byte(4096 & 0xFF)    // PID low
+	pat[13] = 0x00 // program_number high
+	pat[14] = 0x01 // program_number low
+	pat[15] = 0xE0 | byte(4096>>8) // reserved=111 + PID high
+	pat[16] = byte(4096 & 0xFF)    // PID low → PID=4096
+	// CRC32 (dummy, parsers typically don't verify)
+	pat[17] = 0x00
+	pat[18] = 0x00
+	pat[19] = 0x00
+	pat[20] = 0x00
 	buf.Write(pat)
 
-	// PMT packet
+	// PMT packet (PID=4096)
 	pmt := make([]byte, 188)
 	pmt[0] = 0x47
 	pmt[1] = 0x60 | byte(4096>>8) // payload_unit_start=1, PID high
 	pmt[2] = byte(4096 & 0xFF)    // PID low
-	pmt[3] = 0x10
+	pmt[3] = 0x10                  // adaptation_field_control=01, continuity=0
+	// Payload starts at byte 4
 	pmt[4] = 0x00 // pointer
-	pmt[5] = 0x02 // table_id = PMT
-	pmt[6] = 0xB0
-	pmt[7] = 0x17 // section_length = 23
-	pmt[8] = 0x00 // program_number high
-	pmt[9] = 0x01
-	pmt[10] = 0xC1
-	pmt[11] = 0x00
-	pmt[12] = 0x00
-	pmt[13] = 0xE0 | byte(256>>8) // PCR_PID high (256)
-	pmt[14] = byte(256 & 0xFF)
-	pmt[15] = 0xF0
+	// PMT table starts at byte 5
+	pmt[5] = 0x02 // table_id = 2 (PMT)
+	pmt[6] = 0xB0 // section_syntax_indicator=1, reserved=11
+	pmt[7] = 0x17 // section_length = 23 (5+4+5+5+4 CRC)
+	pmt[8] = 0x00  // program_number high
+	pmt[9] = 0x01  // program_number low
+	pmt[10] = 0xC1 // reserved, version=0, current
+	pmt[11] = 0x00 // section_number
+	pmt[12] = 0x00 // last_section_number
+	pmt[13] = 0xE0 | byte(256>>8) // reserved + PCR_PID high (256)
+	pmt[14] = byte(256 & 0xFF)    // PCR_PID low
+	pmt[15] = 0xF0 // reserved
 	pmt[16] = 0x00 // program_info_length = 0
 	// Video stream: type=0x1b (H.264), PID=256
-	pmt[17] = 0x1b
-	pmt[18] = byte(256 >> 8)
-	pmt[19] = byte(256 & 0xFF)
-	pmt[20] = 0xF0
-	pmt[21] = 0x00 // ES_info_length
+	pmt[17] = 0x1b                   // stream_type = H.264
+	pmt[18] = byte(256 >> 8)         // PID high
+	pmt[19] = byte(256 & 0xFF)       // PID low
+	pmt[20] = 0xF0                   // reserved
+	pmt[21] = 0x00                   // ES_info_length = 0
 	// Audio stream: type=0x0f (AAC), PID=257
-	pmt[22] = 0x0f
-	pmt[23] = byte(257 >> 8)
-	pmt[24] = byte(257 & 0xFF)
-	pmt[25] = 0xF0
-	pmt[26] = 0x00
+	pmt[22] = 0x0f                   // stream_type = AAC
+	pmt[23] = byte(257 >> 8)         // PID high
+	pmt[24] = byte(257 & 0xFF)       // PID low
+	pmt[25] = 0xF0                   // reserved
+	pmt[26] = 0x00                   // ES_info_length = 0
+	// CRC32 (dummy)
+	pmt[27] = 0x00
+	pmt[28] = 0x00
+	pmt[29] = 0x00
+	pmt[30] = 0x00
 	buf.Write(pmt)
 
-	// Video PES packet (PID 256) with PTS
+	// Video PES packet (PID=256)
 	pes := make([]byte, 188)
 	pes[0] = 0x47
-	pes[1] = 0x40 | byte(256>>8) // payload_unit_start=1
-	pes[2] = byte(256 & 0xFF)
-	pes[3] = 0x10
-	// PES header
+	pes[1] = 0x40 | byte(256>>8) // payload_unit_start=1, PID high
+	pes[2] = byte(256 & 0xFF)    // PID low
+	pes[3] = 0x10                 // adaptation_field_control=01, continuity=0
+	// PES header starts at byte 4
 	pes[4] = 0x00
 	pes[5] = 0x00
 	pes[6] = 0x01
-	pes[7] = 0xE0 // video stream 0
+	pes[7] = 0xE0 // stream_id = video stream 0
 	pes[8] = 0x00
-	pes[9] = 0x00 // PES packet length (0 = unbounded)
-	pes[10] = 0x84 // flags: PTS present
-	pes[11] = 0x00
-	pes[12] = 0x05 // header_data_length = 5
-	// PTS = 0
-	pes[13] = 0x21
-	pes[14] = 0x00
-	pes[15] = 0x01
-	pes[16] = 0x00
-	pes[17] = 0x01
-	// H.264 NAL: SPS (type 7)
+	pes[9] = 0x00 // PES_packet_length = 0 (unbounded)
+	pes[10] = 0x84 // '10' + scrambling=00 + priority=0 + alignment=0 + copyright=0 + original=0
+	pes[11] = 0x00 // PTS_DTS_flags=00 + ESCR=0 + ES_rate=0 + ...
+	pes[12] = 0x05 // PES_header_data_length = 5
+	// PTS = 0: marker(0010) + PTS[32:30]=000 + marker=1 + PTS[29:15]=0 + marker=1 + PTS[14:0]=0 + marker=1
+	pes[13] = 0x21 // 0010 000 1
+	pes[14] = 0x00 // PTS[29:22] = 0
+	pes[15] = 0x01 // PTS[21:15]=0000000 + marker=1
+	pes[16] = 0x00 // PTS[14:7] = 0
+	pes[17] = 0x01 // PTS[6:0]=0000000 + marker=1
+	// H.264 NAL unit: SPS (type 7)
 	pes[18] = 0x00
 	pes[19] = 0x00
 	pes[20] = 0x00
-	pes[21] = 0x01
-	pes[22] = 0x67 // NAL type 7 (SPS)
+	pes[21] = 0x01 // NAL start code
+	pes[22] = 0x67 // NAL type 7 (SPS), forbidden=0, ref_idc=11
 	buf.Write(pes)
 
-	// Audio PES packet (PID 257)
+	// Audio PES packet (PID=257)
 	audio := make([]byte, 188)
 	audio[0] = 0x47
 	audio[1] = 0x40 | byte(257>>8)
@@ -536,12 +570,13 @@ func buildMinimalTS() []byte {
 	audio[4] = 0x00
 	audio[5] = 0x00
 	audio[6] = 0x01
-	audio[7] = 0xC0 // audio stream 0
+	audio[7] = 0xC0 // stream_id = audio stream 0
 	audio[8] = 0x00
 	audio[9] = 0x00
 	audio[10] = 0x84
 	audio[11] = 0x00
 	audio[12] = 0x05
+	// PTS = 0
 	audio[13] = 0x21
 	audio[14] = 0x00
 	audio[15] = 0x01

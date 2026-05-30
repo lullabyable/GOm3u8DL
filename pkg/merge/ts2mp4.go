@@ -224,6 +224,12 @@ func parseTSFile(path string, cfg *remuxConfig) ([]mp4Sample, []mp4Sample, *trac
 
 	// Second pass: collect PES packets
 	offset = startOffset
+	type pesPacket struct {
+		pid  uint16
+		data []byte
+	}
+	var pesPackets []pesPacket
+
 	for offset+tsPacketSize <= len(data) {
 		pkt, err := parseTSPacket(data[offset : offset+tsPacketSize])
 		if err != nil {
@@ -237,8 +243,11 @@ func parseTSFile(path string, cfg *remuxConfig) ([]mp4Sample, []mp4Sample, *trac
 			continue
 		}
 
-		if pkt.payloadUnitStart && len(buf.data) > 0 {
-			buf.complete = true
+		if pkt.payloadUnitStart && buf.started && len(buf.data) > 0 {
+			// Flush previous PES packet
+			pesPackets = append(pesPackets, pesPacket{pid: pkt.pid, data: buf.data})
+			buf.data = nil
+			buf.started = false
 		}
 
 		if pkt.payloadUnitStart {
@@ -252,21 +261,24 @@ func parseTSFile(path string, cfg *remuxConfig) ([]mp4Sample, []mp4Sample, *trac
 	}
 
 	// Flush remaining PES buffers
-	for _, buf := range pesBuffers {
+	for pid, buf := range pesBuffers {
 		if buf.started && len(buf.data) > 0 {
-			buf.complete = true
+			pesPackets = append(pesPackets, pesPacket{pid: pid, data: buf.data})
 		}
 	}
 
-	// Extract samples from PES buffers
+	// Extract samples from PES packets
 	var videoSamples []mp4Sample
 	var audioSamples []mp4Sample
 
-	if buf, ok := pesBuffers[videoPID]; ok && buf.complete {
-		videoSamples = extractSamplesFromPES(buf.data, true, cfg.timescale)
-	}
-	if buf, ok := pesBuffers[audioPID]; ok && buf.complete {
-		audioSamples = extractSamplesFromPES(buf.data, false, cfg.timescale)
+	for _, pes := range pesPackets {
+		if pes.pid == videoPID {
+			samples := extractSamplesFromPES(pes.data, true, cfg.timescale)
+			videoSamples = append(videoSamples, samples...)
+		} else if pes.pid == audioPID {
+			samples := extractSamplesFromPES(pes.data, false, cfg.timescale)
+			audioSamples = append(audioSamples, samples...)
+		}
 	}
 
 	videoTrack := &trackInfo{
@@ -349,16 +361,27 @@ func parsePMT(payload []byte) (videoPID, audioPID uint16, videoST, audioST uint8
 	if offset+12 > len(payload) {
 		return 0, 0, 0, 0
 	}
+	// table_id should be 0x02
 	if payload[offset] != 0x02 {
 		return 0, 0, 0, 0
 	}
 	sectionLen := int(binary.BigEndian.Uint16(payload[offset+1:offset+3]) & 0x0fff)
-	offset += 3
-	offset += 2 // PCR_PID
+	offset += 3 // skip table_id + section_syntax + section_length
+	// Skip program_number(2) + reserved+version+current(1) + section_number(1) + last_section_number(1)
+	offset += 5
+	// Skip PCR_PID(2)
+	offset += 2
+	if offset+2 > len(payload) {
+		return 0, 0, 0, 0
+	}
 	programInfoLen := int(binary.BigEndian.Uint16(payload[offset:offset+2]) & 0x0fff)
 	offset += 2 + programInfoLen
 
-	end := offset + sectionLen - 9
+	// Parse elementary streams
+	// sectionLen counts from after section_length field; end = (start of streams) + (sectionLen - 9 bytes header)
+	// But simpler: streams end at offset + sectionLen - 9 from the start of the table
+	tableStart := int(payload[0]) + 1
+	end := tableStart + 3 + sectionLen - 4 // -4 for CRC at end
 	for i := offset; i+5 <= end && i+5 <= len(payload); {
 		streamType := payload[i]
 		pid := binary.BigEndian.Uint16(payload[i+1:i+3]) & 0x1fff
@@ -385,11 +408,15 @@ func parsePMT(payload []byte) (videoPID, audioPID uint16, videoST, audioST uint8
 	return videoPID, audioPID, videoST, audioST
 }
 
+// extractSamplesFromPES parses a stream of concatenated PES packets and returns
+// media samples. Each PES packet is parsed to extract its payload (after the
+// PES header), which becomes one sample.
 func extractSamplesFromPES(data []byte, isVideo bool, timescale uint32) []mp4Sample {
 	var samples []mp4Sample
 
 	offset := 0
 	for offset < len(data) {
+		// Find PES start code (0x000001)
 		if offset+3 >= len(data) {
 			break
 		}
@@ -399,52 +426,65 @@ func extractSamplesFromPES(data []byte, isVideo bool, timescale uint32) []mp4Sam
 		}
 
 		streamID := data[offset+3]
-		if streamID == 0xbd || streamID == 0xbe || streamID == 0xbf ||
-			(streamID >= 0xc0 && streamID <= 0xef) || (streamID >= 0xf0 && streamID <= 0xfe) {
-			if offset+6 >= len(data) {
-				break
-			}
-			pesLen := int(binary.BigEndian.Uint16(data[offset+4 : offset+6]))
+		// Check for valid PES stream IDs
+		validStream := streamID == 0xbd || streamID == 0xbe || streamID == 0xbf ||
+			(streamID >= 0xc0 && streamID <= 0xef) || (streamID >= 0xf0 && streamID <= 0xfe)
+		if !validStream {
+			offset += 4
+			continue
+		}
 
+		if offset+6 >= len(data) {
+			break
+		}
+		pesLen := int(binary.BigEndian.Uint16(data[offset+4 : offset+6]))
+
+		// Parse optional PES header
+		payloadStart := offset + 6
+		var pts, dts int64
+
+		if offset+9 <= len(data) {
+			flags := data[offset+7] // '10' + scrambling + priority + alignment + ...
 			headerDataLen := int(data[offset+8])
-			ptsOffset := offset + 9
+			ptsPresent := (flags & 0x80) != 0
+			dtsPresent := (flags & 0x40) != 0
 
-			var pts, dts int64
-			if headerDataLen >= 5 && ptsOffset+5 <= len(data) {
-				pts = parsePTS(data[ptsOffset:])
+			if ptsPresent && offset+9+5 <= len(data) {
+				pts = parsePTS(data[offset+9:])
 				dts = pts
 			}
-			if headerDataLen >= 10 && ptsOffset+10 <= len(data) {
-				dts = parsePTS(data[ptsOffset+5:])
+			if dtsPresent && offset+9+10 <= len(data) {
+				dts = parsePTS(data[offset+9+5:])
 			}
-
-			payloadStart := offset + 9 + headerDataLen
-			payloadEnd := offset + 6 + pesLen
-			if pesLen == 0 {
-				payloadEnd = len(data)
-			}
-			if payloadEnd > len(data) {
-				payloadEnd = len(data)
-			}
-
-			if payloadStart < payloadEnd {
-				payload := make([]byte, payloadEnd-payloadStart)
-				copy(payload, data[payloadStart:payloadEnd])
-
-				sample := mp4Sample{
-					data:       payload,
-					pts:        pts,
-					dts:        dts,
-					duration:   3600,
-					isKeyFrame: isKeyFrame(payload, isVideo),
-				}
-				samples = append(samples, sample)
-			}
-
-			offset = payloadEnd
-		} else {
-			offset += 4
+			payloadStart = offset + 9 + headerDataLen
 		}
+
+		payloadEnd := offset + 6 + pesLen
+		if pesLen == 0 {
+			payloadEnd = len(data)
+		}
+		if payloadEnd > len(data) {
+			payloadEnd = len(data)
+		}
+		if payloadStart > payloadEnd {
+			payloadStart = payloadEnd
+		}
+
+		if payloadStart < payloadEnd {
+			payload := make([]byte, payloadEnd-payloadStart)
+			copy(payload, data[payloadStart:payloadEnd])
+
+			sample := mp4Sample{
+				data:       payload,
+				pts:        pts,
+				dts:        dts,
+				duration:   3600,
+				isKeyFrame: isKeyFrame(payload, isVideo),
+			}
+			samples = append(samples, sample)
+		}
+
+		offset = payloadEnd
 	}
 
 	return samples
@@ -454,9 +494,17 @@ func parsePTS(data []byte) int64 {
 	if len(data) < 5 {
 		return 0
 	}
-	pts := int64(data[0]&0x0e) << 29
-	pts |= int64(binary.BigEndian.Uint16(data[1:3])) << 14
-	pts |= int64(binary.BigEndian.Uint16(data[3:5])) >> 1
+	// MPEG-2 PES PTS encoding:
+	// byte 0: 0010/0011 (4 bits) + PTS[32:30] (3 bits) + marker (1 bit)
+	// byte 1: PTS[29:22] (8 bits)
+	// byte 2: PTS[21:15] (7 bits) + marker (1 bit)
+	// byte 3: PTS[14:7] (8 bits)
+	// byte 4: PTS[6:0] (7 bits) + marker (1 bit)
+	pts := int64((data[0]>>1)&0x07) << 30
+	pts |= int64(data[1]) << 22
+	pts |= int64(data[2]>>1) << 15
+	pts |= int64(data[3]) << 7
+	pts |= int64(data[4] >> 1)
 	return pts
 }
 
