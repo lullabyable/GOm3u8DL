@@ -2,6 +2,7 @@ package hls
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -206,6 +207,14 @@ func (e *Extractor) parseMediaPlaylist(lines []string) (*model.Playlist, error) 
 				currentSeg.Duration = dur
 				currentSeg.Index = mediaIndex
 				currentSeg.EncryptInfo = currentEncrypt
+				// RFC 8216 Section 4.3.2.4: If the IV is not present,
+				// use the media sequence number as the IV (16-byte big-endian).
+				if currentSeg.EncryptInfo.Method == model.EncryptMethodAES128 &&
+					len(currentSeg.EncryptInfo.IV) == 0 {
+					iv := make([]byte, 16)
+					binary.BigEndian.PutUint64(iv[8:], uint64(mediaIndex))
+					currentSeg.EncryptInfo.IV = iv
+				}
 				mediaIndex++
 			}
 

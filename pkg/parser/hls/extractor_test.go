@@ -210,3 +210,53 @@ func TestParseByteRange(t *testing.T) {
 		t.Errorf("parseByteRange(\"512@100\") = (%d, %d), want (100, 512)", offset, length)
 	}
 }
+
+func TestParseMediaPlaylistNoIV(t *testing.T) {
+	// RFC 8216 Section 4.3.2.4: If IV is not present, use media sequence number
+	body := `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
+#EXT-X-MEDIA-SEQUENCE:5
+#EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key.bin"
+#EXTINF:10.0,
+segment5.ts
+#EXTINF:10.0,
+segment6.ts
+#EXT-X-ENDLIST
+`
+
+	ext := NewExtractor("https://example.com/playlist.m3u8")
+	_, playlist, err := ext.Parse(body)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	segments := playlist.MediaParts[0].MediaSegments
+	if len(segments) != 2 {
+		t.Fatalf("expected 2 segments, got %d", len(segments))
+	}
+
+	// Segment 5 (media sequence 5) should have IV = 0x00000000000000000000000000000005
+	seg5 := segments[0]
+	if seg5.EncryptInfo.Method != model.EncryptMethodAES128 {
+		t.Errorf("segment[0].EncryptInfo.Method = %d, want AES128", seg5.EncryptInfo.Method)
+	}
+	if len(seg5.EncryptInfo.IV) != 16 {
+		t.Fatalf("segment[0].EncryptInfo.IV length = %d, want 16", len(seg5.EncryptInfo.IV))
+	}
+	expectedIV5 := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5}
+	for i, b := range seg5.EncryptInfo.IV {
+		if b != expectedIV5[i] {
+			t.Errorf("segment[0].EncryptInfo.IV[%d] = %d, want %d", i, b, expectedIV5[i])
+		}
+	}
+
+	// Segment 6 (media sequence 6) should have IV = 0x00000000000000000000000000000006
+	seg6 := segments[1]
+	expectedIV6 := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6}
+	for i, b := range seg6.EncryptInfo.IV {
+		if b != expectedIV6[i] {
+			t.Errorf("segment[1].EncryptInfo.IV[%d] = %d, want %d", i, b, expectedIV6[i])
+		}
+	}
+}
