@@ -55,6 +55,7 @@ type ProgressEvent struct {
 	SegmentsDone int     // completed segments
 	Percent      float64 // 0.0 ~ 100.0
 	ETA          float64 // estimated seconds remaining
+	Elapsed      float64 // seconds elapsed
 }
 
 // StatusEvent is emitted when task state changes.

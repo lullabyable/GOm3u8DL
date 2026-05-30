@@ -9,11 +9,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lullabyable/GOm3u8DL/pkg/merge"
 	"github.com/lullabyable/GOm3u8DL/pkg/m3u8dl"
@@ -24,6 +27,39 @@ var (
 	version = "dev"
 	commit  = "none"
 )
+
+// ANSI color codes
+const (
+	cReset   = "\033[0m"
+	cBold    = "\033[1m"
+	cDim     = "\033[2m"
+	cRed     = "\033[31m"
+	cGreen   = "\033[32m"
+	cYellow  = "\033[33m"
+	cBlue    = "\033[34m"
+	cMagenta = "\033[35m"
+	cCyan    = "\033[36m"
+	cWhite   = "\033[37m"
+	cBgBlack  = "\033[40m"
+	cBgGreen  = "\033[42m"
+	cBgYellow = "\033[43m"
+	cBgRed    = "\033[41m"
+	cBgCyan   = "\033[46m"
+	cBgMagenta = "\033[45m"
+
+	// Cursor control
+	cursorUp    = "\033[%dA"
+	cursorDown  = "\033[%dB"
+	eraseLine   = "\033[2K"
+	hideCursor  = "\033[?25l"
+	showCursor  = "\033[?25h"
+	saveCursor  = "\033[s"
+	restCursor  = "\033[u"
+)
+
+// progressLines tracks how many lines the progress display uses
+// so we know how many lines to move the cursor up for the next refresh.
+var progressLines int32
 
 func main() {
 	var (
@@ -56,7 +92,10 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("GOm3u8DL %s (%s)\n", version, commit)
+		printBanner()
+		fmt.Printf("  Version : %s (%s)\n", version, commit)
+		fmt.Printf("  Runtime : %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		fmt.Println()
 		os.Exit(0)
 	}
 
@@ -65,10 +104,22 @@ func main() {
 		url = flag.Arg(0)
 	}
 
+	// ── Interactive mode (double-click launch) ──────────────────────
+	if url == "" && !hasStdinData() {
+		url, outputDir, saveName, concurrency, maxSpeed, mergeMode, headers, keys, autoSub, subOnly, svSelect = interactiveMode()
+		if url == "" {
+			fmt.Fprintf(os.Stderr, "%sError: URL is required%s\n", cRed, cReset)
+			os.Exit(1)
+		}
+	}
+
 	if url == "" {
-		fmt.Fprintln(os.Stderr, "Error: URL is required")
+		printBanner()
+		fmt.Fprintf(os.Stderr, "%sError: URL is required%s\n", cRed, cReset)
 		fmt.Fprintln(os.Stderr, "Usage: m3u8dl -url <URL> [options]")
 		fmt.Fprintln(os.Stderr, "       m3u8dl <URL> [options]")
+		fmt.Fprintln(os.Stderr, "       m3u8dl  (interactive mode)")
+		fmt.Fprintln(os.Stderr)
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -83,20 +134,7 @@ func main() {
 	}
 
 	// Parse merge mode
-	mode := model.MergeModeBinary
-	switch strings.ToLower(mergeMode) {
-	case "binary":
-		mode = model.MergeModeBinary
-	case "ts2mp4":
-		mode = model.MergeModeTS2MP4
-	case "fmp4":
-		mode = model.MergeModeFMP4
-	case "ffmpeg":
-		mode = model.MergeModeFFmpeg
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown merge mode: %s\n", mergeMode)
-		os.Exit(1)
-	}
+	mode := parseMergeMode(mergeMode)
 
 	// Build engine
 	engine := m3u8dl.New(
@@ -113,34 +151,25 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		fmt.Fprintln(os.Stderr, "\nInterrupted, cancelling...")
+		fmt.Fprintf(os.Stderr, "\n%s  CANCEL  %s Interrupted, cancelling...%s\n", cBgRed+cWhite, cRed, cReset)
 		cancel()
 	}()
 
+	// Print banner and task info
+	printBanner()
+	printTaskInfo(url, outputDir, saveName, mergeMode, concurrency, maxSpeed, headerMap)
+
 	// Get streams
-	fmt.Printf("Parsing: %s\n", url)
+	fmt.Printf("\n%s  PARSING  %s Fetching manifest...%s\n", cBgCyan+cWhite, cCyan, cReset)
 	streams, err := engine.GetStreams(ctx, url, headerMap)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "\n%s  ERROR  %s %v%s\n", cBgRed+cWhite, cRed, err, cReset)
 		os.Exit(1)
 	}
 
 	if len(streams) == 0 {
-		fmt.Fprintln(os.Stderr, "No streams found")
+		fmt.Fprintf(os.Stderr, "\n%s  ERROR  %s No streams found%s\n", cBgRed+cWhite, cRed, cReset)
 		os.Exit(1)
-	}
-
-	// Separate streams by media type
-	var videoStreams, audioStreams []model.StreamInfo
-	for _, s := range streams {
-		switch s.MediaType {
-		case model.MediaTypeVideo:
-			videoStreams = append(videoStreams, s)
-		case model.MediaTypeAudio:
-			audioStreams = append(audioStreams, s)
-		default:
-			videoStreams = append(videoStreams, s)
-		}
 	}
 
 	// Auto-generate save name if not provided
@@ -148,48 +177,431 @@ func main() {
 		saveName = generateSaveName(url, nil)
 	}
 
-	// Check if we have separate audio+video streams (common in DASH)
+	// Separate streams by media type
+	var videoStreams, audioStreams []model.StreamInfo
+	for _, s := range streams {
+		switch s.MediaType {
+		case model.MediaTypeAudio:
+			audioStreams = append(audioStreams, s)
+		default:
+			videoStreams = append(videoStreams, s)
+		}
+	}
+
 	hasSeparateAV := len(videoStreams) > 0 && len(audioStreams) > 0
 
 	if hasSeparateAV {
-		// Multi-stream: download video and audio separately, then mux
 		downloadSeparateStreams(ctx, engine, url, videoStreams, audioStreams,
 			svSelect, outputDir, saveName, headerMap, concurrency, maxSpeed,
 			mode, autoSub, subOnly)
 	} else {
-		// Single stream: existing logic
+		// Select stream
 		var selected *model.StreamInfo
 		if svSelect != "" {
 			selected = selectStreamByFilter(streams, svSelect)
+		} else if len(streams) == 1 {
+			selected = &streams[0]
 		} else {
-			for i := range streams {
-				if streams[i].MediaType == model.MediaTypeVideo {
-					if selected == nil || streams[i].Bandwidth > selected.Bandwidth {
-						selected = &streams[i]
-					}
-				}
-			}
-			if selected == nil {
-				selected = &streams[0]
-			}
+			selected = interactiveStreamSelect(streams)
 		}
 
 		if selected == nil {
-			fmt.Fprintln(os.Stderr, "No stream selected")
+			fmt.Fprintf(os.Stderr, "\n%s  ERROR  %s No stream selected%s\n", cBgRed+cWhite, cRed, cReset)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Selected: %s %s (%s, %d segments)\n",
-			selected.Name, selected.Resolution,
-			selected.FormatBandwidth(), selected.SegmentsCount)
-
+		printStreamInfo(selected)
 		downloadSingleStream(ctx, engine, url, selected, outputDir, saveName,
 			headerMap, concurrency, maxSpeed, mode, autoSub, subOnly)
 	}
 }
 
-// downloadSeparateStreams downloads video and audio streams and muxes directly
-// from segments (no intermediate merged files).
+// ── Interactive Mode ──────────────────────────────────────────────────
+
+// hasStdinData checks if stdin has piped data.
+func hasStdinData() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice == 0
+}
+
+// interactiveMode prompts the user for all parameters step by step.
+func interactiveMode() (url, outputDir, saveName string, concurrency int, maxSpeed int64,
+	mergeMode string, headers stringSlice, keys stringSlice, autoSub, subOnly bool, svSelect string) {
+
+	reader := bufio.NewReader(os.Stdin)
+	mergeMode = "ts2mp4"
+
+	printBanner()
+	fmt.Printf("%s╔══════════════════════════════════════════════════════════════╗%s\n", cCyan, cReset)
+	fmt.Printf("%s║%s  Interactive Mode — press Enter to accept defaults          %s║%s\n", cCyan, cWhite, cCyan, cReset)
+	fmt.Printf("%s╚══════════════════════════════════════════════════════════════╝%s\n\n", cCyan, cReset)
+
+	// URL (required)
+	for {
+		fmt.Printf("  %s▶%s URL %s(required)%s: ", cGreen, cWhite, cYellow, cReset)
+		url, _ = reader.ReadString('\n')
+		url = strings.TrimSpace(url)
+		if url != "" {
+			break
+		}
+		fmt.Printf("    %s⚠ URL cannot be empty%s\n\n", cRed, cReset)
+	}
+
+	// Output directory
+	fmt.Printf("  %s▶%s Output dir %s[default: /downloads]%s: ", cGreen, cWhite, cDim, cReset)
+	outputDir, _ = reader.ReadString('\n')
+	outputDir = strings.TrimSpace(outputDir)
+	if outputDir == "" {
+		outputDir = "/downloads"
+	}
+
+	// Save name
+	fmt.Printf("  %s▶%s Save name %s[default: auto-generated]%s: ", cGreen, cWhite, cDim, cReset)
+	saveName, _ = reader.ReadString('\n')
+	saveName = strings.TrimSpace(saveName)
+
+	// Concurrency
+	fmt.Printf("  %s▶%s Concurrency %s[default: 8]%s: ", cGreen, cWhite, cDim, cReset)
+	concStr, _ := reader.ReadString('\n')
+	concStr = strings.TrimSpace(concStr)
+	concurrency = 8
+	if concStr != "" {
+		if n, err := strconv.Atoi(concStr); err == nil && n > 0 {
+			concurrency = n
+		}
+	}
+
+	// Max speed
+	fmt.Printf("  %s▶%s Max speed %s[default: unlimited, e.g. 2M, 500K]%s: ", cGreen, cWhite, cDim, cReset)
+	speedStr, _ := reader.ReadString('\n')
+	speedStr = strings.TrimSpace(speedStr)
+	maxSpeed = 0
+	if speedStr != "" {
+		maxSpeed = parseSpeed(speedStr)
+	}
+
+	// Merge mode
+	fmt.Printf("  %s▶%s Merge mode %s[binary|ts2mp4|fmp4|ffmpeg, default: ts2mp4]%s: ", cGreen, cWhite, cDim, cReset)
+	mergeInput, _ := reader.ReadString('\n')
+	mergeInput = strings.TrimSpace(mergeInput)
+	if mergeInput != "" {
+		mergeMode = mergeInput
+	}
+
+	// Headers
+	fmt.Printf("  %s▶%s HTTP Headers %s[format: Key: Value, empty to skip]%s:\n", cGreen, cWhite, cDim, cReset)
+	for {
+		fmt.Printf("    %s>%s ", cDim, cReset)
+		h, _ := reader.ReadString('\n')
+		h = strings.TrimSpace(h)
+		if h == "" {
+			break
+		}
+		headers = append(headers, h)
+	}
+
+	// Keys
+	fmt.Printf("  %s▶%s Decryption keys %s[format: kid:key hex, empty to skip]%s:\n", cGreen, cWhite, cDim, cReset)
+	for {
+		fmt.Printf("    %s>%s ", cDim, cReset)
+		k, _ := reader.ReadString('\n')
+		k = strings.TrimSpace(k)
+		if k == "" {
+			break
+		}
+		keys = append(keys, k)
+	}
+
+	// Stream selection filter
+	fmt.Printf("  %s▶%s Stream filter %s[-sv filter, e.g. best, empty for interactive]%s: ", cGreen, cWhite, cDim, cReset)
+	svSelect, _ = reader.ReadString('\n')
+	svSelect = strings.TrimSpace(svSelect)
+
+	fmt.Println()
+	return
+}
+
+// parseSpeed parses a speed string like "2M", "500K", "1048576" into bytes/sec.
+func parseSpeed(s string) int64 {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" {
+		return 0
+	}
+
+	multiplier := int64(1)
+	if strings.HasSuffix(s, "G") {
+		multiplier = 1024 * 1024 * 1024
+		s = s[:len(s)-1]
+	} else if strings.HasSuffix(s, "M") {
+		multiplier = 1024 * 1024
+		s = s[:len(s)-1]
+	} else if strings.HasSuffix(s, "K") {
+		multiplier = 1024
+		s = s[:len(s)-1]
+	}
+
+	val, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return int64(val * float64(multiplier))
+}
+
+// ── Banner & Info Printing ────────────────────────────────────────────
+
+func printBanner() {
+	fmt.Printf("\n")
+	fmt.Printf("  %s%s╔═══════════════════════════════════════════════════════╗%s\n", cCyan, cBold, cReset)
+	fmt.Printf("  %s%s║         GOm3u8DL — Stream Downloader                 ║%s\n", cCyan, cBold, cReset)
+	fmt.Printf("  %s%s║         Pure Go HLS / DASH / MSS                     ║%s\n", cCyan, cBold, cReset)
+	fmt.Printf("  %s%s╚═══════════════════════════════════════════════════════╝%s\n", cCyan, cBold, cReset)
+	fmt.Printf("\n")
+}
+
+func printTaskInfo(url, outputDir, saveName, mergeMode string, concurrency int, maxSpeed int64, headers map[string]string) {
+	fmt.Printf("  %s┌─ Task Info ─────────────────────────────────────────────┐%s\n", cDim, cReset)
+	fmt.Printf("  %s│%s URL         : %s%s%s\n", cDim, cReset, cWhite, truncateURL(url, 80), cReset)
+	fmt.Printf("  %s│%s Output Dir  : %s%s%s\n", cDim, cReset, cWhite, outputDir, cReset)
+	if saveName != "" {
+		fmt.Printf("  %s│%s Save Name   : %s%s%s\n", cDim, cReset, cWhite, saveName, cReset)
+	}
+	fmt.Printf("  %s│%s Concurrency : %s%d%s\n", cDim, cReset, cWhite, concurrency, cReset)
+	if maxSpeed > 0 {
+		fmt.Printf("  %s│%s Max Speed   : %s%s/s%s\n", cDim, cReset, cWhite, formatBytes(maxSpeed), cReset)
+	} else {
+		fmt.Printf("  %s│%s Max Speed   : %sunlimited%s\n", cDim, cReset, cWhite, cReset)
+	}
+	fmt.Printf("  %s│%s Merge Mode  : %s%s%s\n", cDim, cReset, cWhite, mergeMode, cReset)
+	if len(headers) > 0 {
+		for k, v := range headers {
+			fmt.Printf("  %s│%s Header      : %s%s: %s%s\n", cDim, cReset, cCyan, k, v, cReset)
+		}
+	}
+	fmt.Printf("  %s└────────────────────────────────────────────────────────┘%s\n", cDim, cReset)
+}
+
+func printStreamInfo(s *model.StreamInfo) {
+	fmt.Printf("\n  %s┌─ Selected Stream ───────────────────────────────────────┐%s\n", cGreen, cReset)
+	fmt.Printf("  %s│%s Name       : %s%s%s\n", cGreen, cReset, cWhite, s.Name, cReset)
+	if s.Resolution != "" {
+		fmt.Printf("  %s│%s Resolution : %s%s%s\n", cGreen, cReset, cWhite, s.Resolution, cReset)
+	}
+	if s.Codecs != "" {
+		fmt.Printf("  %s│%s Codecs     : %s%s%s\n", cGreen, cReset, cWhite, s.Codecs, cReset)
+	}
+	if s.Bandwidth > 0 {
+		fmt.Printf("  %s│%s Bandwidth  : %s%s%s\n", cGreen, cReset, cWhite, s.FormatBandwidth(), cReset)
+	}
+	if s.Language != "" {
+		fmt.Printf("  %s│%s Language   : %s%s%s\n", cGreen, cReset, cWhite, s.Language, cReset)
+	}
+	if s.VideoRange != "" && s.VideoRange != "SDR" {
+		fmt.Printf("  %s│%s HDR        : %s%s%s\n", cGreen, cReset, cYellow, s.VideoRange, cReset)
+	}
+	fmt.Printf("  %s│%s Segments   : %s%d%s\n", cGreen, cReset, cWhite, s.SegmentsCount, cReset)
+	fmt.Printf("  %s└────────────────────────────────────────────────────────┘%s\n", cGreen, cReset)
+}
+
+// ── Interactive Stream Selection ──────────────────────────────────────
+
+func interactiveStreamSelect(streams []model.StreamInfo) *model.StreamInfo {
+	if len(streams) == 0 {
+		return nil
+	}
+	if len(streams) == 1 {
+		return &streams[0]
+	}
+
+	fmt.Printf("\n  %s┌─ Available Streams ───────────────────────────────────────────────────────────┐%s\n", cYellow, cReset)
+
+	// Header
+	fmt.Printf("  %s│%s  %s%-4s %-12s %-20s %-14s %-10s %-8s %-6s%s  %s│%s\n",
+		cYellow, cReset,
+		cBold, "#", "Name", "Resolution", "Bandwidth", "Codecs", "Lang", "Segs",
+		cReset, cYellow, cReset)
+
+	fmt.Printf("  %s│%s%s%s│%s\n", cYellow, cReset,
+		strings.Repeat("─", 78), cYellow, cReset)
+
+	for i, s := range streams {
+		lang := s.Language
+		if lang == "" {
+			lang = "-"
+		}
+		res := s.Resolution
+		if res == "" {
+			res = "-"
+		}
+		codecs := s.Codecs
+		if codecs == "" {
+			codecs = "-"
+		}
+		if utf8.RuneCountInString(codecs) > 12 {
+			runes := []rune(codecs)
+			if len(runes) > 12 {
+				codecs = string(runes[:12]) + "…"
+			}
+		}
+		bw := "-"
+		if s.Bandwidth > 0 {
+			bw = s.FormatBandwidth()
+		}
+
+		// Highlight video streams
+		nameColor := cWhite
+		if s.MediaType == model.MediaTypeAudio {
+			nameColor = cBlue
+		} else if s.MediaType == model.MediaTypeSubtitles {
+			nameColor = cMagenta
+		}
+
+		fmt.Printf("  %s│%s  %s%-4d%s %s%-12s%s %-20s %-14s %-10s %-8s %-6d  %s│%s\n",
+			cYellow, cReset,
+			cCyan, i+1, cReset,
+			nameColor, s.Name, cReset,
+			res, bw, codecs, lang, s.SegmentsCount,
+			cYellow, cReset)
+	}
+
+	fmt.Printf("  %s└─────────────────────────────────────────────────────────────────────────────────┘%s\n", cYellow, cReset)
+
+	// Prompt
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Printf("\n  %s▶%s Select stream %s[1-%d, default: 1]%s: ", cGreen, cWhite, cDim, len(streams), cReset)
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		choice := 1
+		if input != "" {
+			n, err := strconv.Atoi(input)
+			if err != nil || n < 1 || n > len(streams) {
+				fmt.Printf("    %s⚠ Invalid choice: %s%s\n", cRed, input, cReset)
+				continue
+			}
+			choice = n
+		}
+
+		return &streams[choice-1]
+	}
+}
+
+// ── Rich Progress Display ─────────────────────────────────────────────
+
+// printProgress renders a multi-line progress display (similar to N_m3u8DL-RE).
+// It uses ANSI escape codes to overwrite previous output.
+func printProgress(e m3u8dl.ProgressEvent, status string) {
+	// Move cursor up to overwrite previous progress block
+	lines := int(atomic.LoadInt32(&progressLines))
+	if lines > 0 {
+		fmt.Fprintf(os.Stderr, "\033[%dA", lines)
+	}
+
+	barWidth := 40
+	filled := int(e.Percent / 100 * float64(barWidth))
+	if filled > barWidth {
+		filled = barWidth
+	}
+
+	// Build the progress bar with gradient colors
+	bar := ""
+	for i := 0; i < barWidth; i++ {
+		if i < filled {
+			if i < barWidth/3 {
+				bar += cRed + "━" + cReset
+			} else if i < barWidth*2/3 {
+				bar += cYellow + "━" + cReset
+			} else {
+				bar += cGreen + "━" + cReset
+			}
+		} else {
+			bar += cDim + "─" + cReset
+		}
+	}
+
+	speedStr := formatBytesSpeed(e.Speed)
+	avgStr := formatBytesSpeed(e.AvgSpeed)
+	downStr := formatBytes(e.Downloaded)
+	totalStr := formatBytes(e.Total)
+	etaStr := formatETA(e.ETA)
+	elapsedStr := formatDuration(e.Elapsed)
+
+	// Status indicator
+	statusIcon := cGreen + "▶" + cReset
+	if status == "downloading" {
+		statusIcon = cYellow + "↓" + cReset
+	} else if status == "merging" {
+		statusIcon = cBlue + "⟳" + cReset
+	} else if status == "done" {
+		statusIcon = cGreen + "✓" + cReset
+	}
+
+	var linesOut []string
+
+	// Line 1: Progress bar + percentage
+	linesOut = append(linesOut, fmt.Sprintf("  %s %s %s%5.1f%%  %s %d/%d segments",
+		statusIcon, bar, cBold+cWhite, e.Percent, cReset,
+		e.SegmentsDone, e.Segments))
+
+	// Line 2: Stats
+	linesOut = append(linesOut, fmt.Sprintf("       %sSize:%s %-10s  %sSpeed:%s %-11s  %sAvg:%s %-11s  %sETA:%s %s  %sElapsed:%s %s",
+		cDim, cReset, downStr+"/"+totalStr,
+		cGreen, cReset, speedStr,
+		cDim, cReset, avgStr,
+		cYellow, cReset, etaStr,
+		cDim, cReset, elapsedStr))
+
+	// Print all lines
+	for _, l := range linesOut {
+		fmt.Fprintf(os.Stderr, "%s%s\n", eraseLine, l)
+	}
+
+	atomic.StoreInt32(&progressLines, int32(len(linesOut)))
+}
+
+// printDone displays the final completion message with stats.
+func printDone(outputPath string, elapsed float64, fileSize int64) {
+	lines := int(atomic.LoadInt32(&progressLines))
+	if lines > 0 {
+		fmt.Fprintf(os.Stderr, "\033[%dA", lines)
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(os.Stderr, "%s\n", eraseLine)
+		}
+		fmt.Fprintf(os.Stderr, "\033[%dA", lines)
+	}
+	atomic.StoreInt32(&progressLines, 0)
+
+	fmt.Printf("\n")
+	fmt.Printf("  %s%s  DONE  ✓%s %sDownload complete!%s\n", cBgGreen, cWhite+cBold, cReset, cGreen, cReset)
+	fmt.Printf("\n")
+	fmt.Printf("  %s┌─ Result ────────────────────────────────────────────────┐%s\n", cGreen, cReset)
+	fmt.Printf("  %s│%s Output   : %s%s%s\n", cGreen, cReset, cWhite, outputPath, cReset)
+	fmt.Printf("  %s│%s Size     : %s%s%s\n", cGreen, cReset, cWhite, formatBytes(fileSize), cReset)
+	fmt.Printf("  %s│%s Duration : %s%s%s\n", cGreen, cReset, cWhite, formatDuration(elapsed), cReset)
+	if elapsed > 0 && fileSize > 0 {
+		avgSpeed := float64(fileSize) / elapsed
+		fmt.Printf("  %s│%s Avg Speed: %s%s/s%s\n", cGreen, cReset, cWhite, formatBytes(int64(avgSpeed)), cReset)
+	}
+	fmt.Printf("  %s└────────────────────────────────────────────────────────┘%s\n\n", cGreen, cReset)
+}
+
+// resetProgress clears the progress display area.
+func resetProgress() {
+	lines := int(atomic.LoadInt32(&progressLines))
+	if lines > 0 {
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(os.Stderr, "%s\n", eraseLine)
+		}
+		fmt.Fprintf(os.Stderr, "\033[%dA", lines)
+	}
+	atomic.StoreInt32(&progressLines, 0)
+}
+
+// ── Download Functions ────────────────────────────────────────────────
+
 func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url string,
 	videoStreams, audioStreams []model.StreamInfo, svSelect, outputDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
@@ -199,35 +611,34 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	var selectedVideo *model.StreamInfo
 	if svSelect != "" {
 		selectedVideo = selectStreamByFilter(videoStreams, svSelect)
+	} else if len(videoStreams) == 1 {
+		selectedVideo = &videoStreams[0]
 	} else {
-		for i := range videoStreams {
-			if selectedVideo == nil || videoStreams[i].Bandwidth > selectedVideo.Bandwidth {
-				selectedVideo = &videoStreams[i]
-			}
-		}
+		selectedVideo = interactiveStreamSelect(videoStreams)
 	}
 
-	// Select best audio (highest bandwidth)
+	// Select best audio
 	var selectedAudio *model.StreamInfo
-	for i := range audioStreams {
-		if selectedAudio == nil || audioStreams[i].Bandwidth > selectedAudio.Bandwidth {
-			selectedAudio = &audioStreams[i]
-		}
+	if len(audioStreams) == 1 {
+		selectedAudio = &audioStreams[0]
+	} else {
+		selectedAudio = interactiveStreamSelect(audioStreams)
 	}
 
 	if selectedVideo == nil || selectedAudio == nil {
-		fmt.Fprintln(os.Stderr, "Failed to select video/audio streams")
+		fmt.Fprintf(os.Stderr, "\n%s  ERROR  %s Failed to select video/audio streams%s\n", cBgRed+cWhite, cRed, cReset)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Video: %s %s (%s, %d segs)\n",
-		selectedVideo.Name, selectedVideo.Resolution,
-		selectedVideo.FormatBandwidth(), selectedVideo.SegmentsCount)
-	fmt.Printf("Audio: %s %s (%s, %d segs)\n",
-		selectedAudio.Name, selectedAudio.Language,
-		selectedAudio.FormatBandwidth(), selectedAudio.SegmentsCount)
+	fmt.Printf("\n  %s┌─ Dual Stream ───────────────────────────────────────────┐%s\n", cMagenta, cReset)
+	fmt.Printf("  %s│%s Video : %s%s %s (%s, %d segs)%s\n",
+		cMagenta, cReset, cWhite, selectedVideo.Name, selectedVideo.Resolution,
+		selectedVideo.FormatBandwidth(), selectedVideo.SegmentsCount, cReset)
+	fmt.Printf("  %s│%s Audio : %s%s %s (%s, %d segs)%s\n",
+		cMagenta, cReset, cWhite, selectedAudio.Name, selectedAudio.Language,
+		selectedAudio.FormatBandwidth(), selectedAudio.SegmentsCount, cReset)
+	fmt.Printf("  %s└────────────────────────────────────────────────────────┘%s\n", cMagenta, cReset)
 
-	// Progress bar
 	var lastProgressTime time.Time
 	handler := m3u8dl.EventHandlerFunc{
 		OnProgressFn: func(e m3u8dl.ProgressEvent) {
@@ -236,20 +647,23 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 				return
 			}
 			lastProgressTime = now
-			printProgressBar(e.Percent, e.SegmentsDone, e.Segments, e.Speed, e.ETA)
+			printProgress(e, "downloading")
 		},
 		OnStatusChangeFn: func(e m3u8dl.StatusEvent) {
-			fmt.Fprintf(os.Stderr, "\n[%s] %s\n", e.Status, e.TaskID)
+			resetProgress()
+			fmt.Printf("  %s  %-12s  %s%s%s\n", cBgCyan+cWhite, strings.ToUpper(e.Status.String()), cCyan, e.TaskID, cReset)
 		},
 		OnLogFn: func(e m3u8dl.LogEvent) {
 			if e.Level >= m3u8dl.LogWarn {
-				fmt.Fprintf(os.Stderr, "\n[%s] %s\n", logLevelStr(e.Level), e.Message)
+				resetProgress()
+				fmt.Fprintf(os.Stderr, "  %s[%-5s]%s %s\n", cYellow, logLevelStr(e.Level), cReset, e.Message)
 			}
 		},
 	}
 
-	// Download video segments only (no merge)
-	fmt.Fprintf(os.Stderr, "\nDownloading video stream...\n")
+	// Download video
+	fmt.Printf("\n%s  VIDEO  %s Downloading video stream...%s\n", cBgMagenta+cWhite, cMagenta, cReset)
+	atomic.StoreInt32(&progressLines, 0)
 	videoReq := model.DownloadRequest{
 		Stream:             selectedVideo,
 		URL:                url,
@@ -263,14 +677,16 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	}
 	videoResult, err := engine.DownloadOnly(ctx, videoReq, handler)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nVideo download failed: %v\n", err)
+		resetProgress()
+		fmt.Fprintf(os.Stderr, "\n%s  ERROR  %s Video download failed: %v%s\n", cBgRed+cWhite, cRed, err, cReset)
 		os.Exit(1)
 	}
 	defer os.RemoveAll(videoResult.TempDir)
-	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+	resetProgress()
 
-	// Download audio segments only (no merge)
-	fmt.Fprintf(os.Stderr, "Downloading audio stream...\n")
+	// Download audio
+	fmt.Printf("\n%s  AUDIO  %s Downloading audio stream...%s\n", cBgMagenta+cWhite, cMagenta, cReset)
+	atomic.StoreInt32(&progressLines, 0)
 	audioReq := model.DownloadRequest{
 		Stream:             selectedAudio,
 		URL:                url,
@@ -284,17 +700,19 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	}
 	audioResult, err := engine.DownloadOnly(ctx, audioReq, handler)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nAudio download failed: %v\n", err)
+		resetProgress()
+		fmt.Fprintf(os.Stderr, "\n%s  ERROR  %s Audio download failed: %v%s\n", cBgRed+cWhite, cRed, err, cReset)
 		os.Exit(1)
 	}
 	defer os.RemoveAll(audioResult.TempDir)
-	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+	resetProgress()
 
-	// Mux according to user's merge mode
+	// Mux
 	outputPath := filepath.Join(outputDir, saveName+".mp4")
-	fmt.Fprintf(os.Stderr, "Muxing %d video + %d audio segments → %s (%s)\n",
+	fmt.Printf("\n%s  MUX  %s Muxing %d video + %d audio → %s (%s)%s\n",
+		cBgYellow+cWhite, cYellow,
 		len(videoResult.SegmentPaths), len(audioResult.SegmentPaths),
-		outputPath, mergeModeStr(mode))
+		outputPath, mergeModeStr(mode), cReset)
 
 	isTSSegments := isTSFormat(videoResult.SegmentPaths)
 
@@ -302,26 +720,19 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	switch mode {
 	case model.MergeModeTS2MP4:
 		if isTSSegments {
-			// TS → 解析PES → 直接输出fMP4 (纯Go)
 			muxErr = merge.MuxSeparateTSStreams(
 				videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
 		} else {
-			// fMP4 → 合并moov+moof → 输出fMP4 (纯Go)
 			muxErr = merge.MuxFMP4FromSegments(
 				videoResult.InitPath, audioResult.InitPath,
 				videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
 		}
-
 	case model.MergeModeFMP4:
-		// fMP4 → 合并moov+moof → 输出fMP4 (纯Go)
 		muxErr = merge.MuxFMP4FromSegments(
 			videoResult.InitPath, audioResult.InitPath,
 			videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
-
 	case model.MergeModeFFmpeg:
-		// 用ffmpeg混流
 		if isTSSegments {
-			// TS先各自合并再ffmpeg混流
 			videoMerged := filepath.Join(videoResult.TempDir, "video_merged.ts")
 			audioMerged := filepath.Join(audioResult.TempDir, "audio_merged.ts")
 			merge.BinaryMerge(videoResult.SegmentPaths, videoMerged)
@@ -334,10 +745,8 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 			merge.BinaryMerge(audioResult.SegmentPaths, audioMerged)
 			muxErr = merge.FFmpegMuxAV(videoMerged, audioMerged, outputPath, "ffmpeg")
 		}
-
-	default: // binary
+	default:
 		if isTSSegments {
-			// TS → 直接转fMP4 (纯Go, binary模式下也输出mp4因为分离流无法用纯ts)
 			muxErr = merge.MuxSeparateTSStreams(
 				videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
 		} else {
@@ -348,22 +757,20 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	}
 
 	if muxErr != nil {
-		fmt.Fprintf(os.Stderr, "\nMux failed: %v\n", muxErr)
+		fmt.Fprintf(os.Stderr, "\n%s  ERROR  %s Mux failed: %v%s\n", cBgRed+cWhite, cRed, muxErr, cReset)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Done! Output: %s\n", outputPath)
+	printDone(outputPath, 0, 0)
 }
 
-// downloadSingleStream downloads a single stream (existing behavior).
 func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string,
 	selected *model.StreamInfo, outputDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
 	autoSub, subOnly bool) {
 
-	fmt.Printf("Selected: %s %s (%s, %d segments)\n",
-		selected.Name, selected.Resolution,
-		selected.FormatBandwidth(), selected.SegmentsCount)
+	startTime := time.Now()
+	atomic.StoreInt32(&progressLines, 0)
 
 	var lastProgressTime time.Time
 	req := model.DownloadRequest{
@@ -388,57 +795,163 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 				return
 			}
 			lastProgressTime = now
-			printProgressBar(e.Percent, e.SegmentsDone, e.Segments, e.Speed, e.ETA)
+			printProgress(e, "downloading")
 		},
 		OnStatusChangeFn: func(e m3u8dl.StatusEvent) {
-			fmt.Fprintf(os.Stderr, "\n[%s] %s\n", e.Status, e.TaskID)
+			resetProgress()
+			statusStr := strings.ToUpper(e.Status.String())
+			icon := cYellow + "⟳" + cReset
+			if e.Status == model.TaskStatusDone {
+				icon = cGreen + "✓" + cReset
+			} else if e.Status == model.TaskStatusFailed {
+				icon = cRed + "✗" + cReset
+			} else if e.Status == model.TaskStatusMerging {
+				icon = cBlue + "⟳" + cReset
+			}
+			fmt.Printf("  %s  %-12s  %s%s%s\n", icon, statusStr, cDim, e.TaskID, cReset)
 		},
 		OnLogFn: func(e m3u8dl.LogEvent) {
 			if e.Level >= m3u8dl.LogWarn {
-				fmt.Fprintf(os.Stderr, "\n[%s] %s\n", logLevelStr(e.Level), e.Message)
+				resetProgress()
+				fmt.Fprintf(os.Stderr, "  %s[%-5s]%s %s\n", cYellow, logLevelStr(e.Level), cReset, e.Message)
 			}
 		},
 	}
 
 	if err := engine.Download(ctx, req, handler); err != nil {
-		fmt.Fprintf(os.Stderr, "\nDownload failed: %v\n", err)
+		resetProgress()
+		fmt.Fprintf(os.Stderr, "\n%s  ERROR  %s Download failed: %v%s\n", cBgRed+cWhite, cRed, err, cReset)
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+	elapsed := time.Since(startTime).Seconds()
 	outputPath := buildOutputPath(outputDir, saveName, mode)
-	fmt.Printf("Done! Output: %s\n", outputPath)
-}
 
-// printProgressBar renders a single-line progress bar.
-func printProgressBar(pct float64, done, total int, speed int64, eta float64) {
-	barWidth := 30
-	filled := int(pct / 100 * float64(barWidth))
-	if filled > barWidth {
-		filled = barWidth
+	// Get file size
+	var fileSize int64
+	if fi, err := os.Stat(outputPath); err == nil {
+		fileSize = fi.Size()
 	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
 
-	speedStr := formatBytes(speed)
-	etaStr := formatETA(eta)
-
-	fmt.Fprintf(os.Stderr, "\r  %s %5.1f%% %d/%d %s/s ETA %s   ",
-		bar, pct, done, total, speedStr, etaStr)
+	printDone(outputPath, elapsed, fileSize)
 }
+
+// ── Utilities ─────────────────────────────────────────────────────────
 
 func formatETA(seconds float64) string {
 	if seconds <= 0 || seconds > 36000 {
 		return "--:--"
 	}
 	d := time.Duration(seconds * float64(time.Second))
-	m := int(d.Minutes())
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
 	s := int(d.Seconds()) % 60
-	if m >= 60 {
-		h := m / 60
-		m = m % 60
+	if h > 0 {
 		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 	}
 	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+func formatDuration(seconds float64) string {
+	if seconds <= 0 {
+		return "0s"
+	}
+	d := time.Duration(seconds * float64(time.Second))
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm%02ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
+}
+
+func formatBytesSpeed(b int64) string {
+	if b <= 0 {
+		return "0 B/s"
+	}
+	units := []string{"B/s", "KB/s", "MB/s", "GB/s"}
+	val := float64(b)
+	for _, u := range units {
+		if val < 1024 {
+			return fmt.Sprintf("%.1f %s", val, u)
+		}
+		val /= 1024
+	}
+	return fmt.Sprintf("%.1f TB/s", val)
+}
+
+func formatBytes(b int64) string {
+	if b <= 0 {
+		return "0 B"
+	}
+	units := []string{"B", "KB", "MB", "GB"}
+	val := float64(b)
+	for _, u := range units {
+		if val < 1024 {
+			return fmt.Sprintf("%.1f %s", val, u)
+		}
+		val /= 1024
+	}
+	return fmt.Sprintf("%.1f TB", val)
+}
+
+func truncateURL(url string, maxLen int) string {
+	if len(url) <= maxLen {
+		return url
+	}
+	return url[:maxLen-3] + "..."
+}
+
+func generateSaveName(url string, stream *model.StreamInfo) string {
+	now := time.Now()
+	return now.Format("20060102") + "+" + strconv.FormatInt(now.Unix(), 10)
+}
+
+func parseMergeMode(s string) model.MergeMode {
+	switch strings.ToLower(s) {
+	case "binary":
+		return model.MergeModeBinary
+	case "ts2mp4":
+		return model.MergeModeTS2MP4
+	case "fmp4":
+		return model.MergeModeFMP4
+	case "ffmpeg":
+		return model.MergeModeFFmpeg
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown merge mode: %s, using ts2mp4\n", s)
+		return model.MergeModeTS2MP4
+	}
+}
+
+func buildOutputPath(dir, name string, mode model.MergeMode) string {
+	if dir == "" {
+		dir = "."
+	}
+	switch mode {
+	case model.MergeModeBinary:
+		return filepath.Join(dir, name+".ts")
+	default:
+		return filepath.Join(dir, name+".mp4")
+	}
+}
+
+func logLevelStr(level m3u8dl.LogLevel) string {
+	switch level {
+	case m3u8dl.LogDebug:
+		return "DEBUG"
+	case m3u8dl.LogInfo:
+		return "INFO"
+	case m3u8dl.LogWarn:
+		return "WARN"
+	case m3u8dl.LogError:
+		return "ERROR"
+	default:
+		return "?"
+	}
 }
 
 func mergeModeStr(m model.MergeMode) string {
@@ -456,7 +969,7 @@ func mergeModeStr(m model.MergeMode) string {
 	}
 }
 
-// isTSFormat checks if segment files are MPEG-TS format by reading the first bytes.
+// isTSFormat checks if segment files are MPEG-TS format.
 func isTSFormat(paths []string) bool {
 	if len(paths) == 0 {
 		return false
@@ -473,11 +986,9 @@ func isTSFormat(paths []string) bool {
 		return false
 	}
 
-	// TS files start with sync byte 0x47, typically at offset 0
 	if buf[0] == 0x47 {
 		return true
 	}
-	// Some TS files have garbage before the first sync byte
 	for i := 0; i < n; i++ {
 		if buf[i] == 0x47 {
 			return true
@@ -487,13 +998,8 @@ func isTSFormat(paths []string) bool {
 	return false
 }
 
-// generateSaveName creates a filename using date+timestamp format.
-func generateSaveName(url string, stream *model.StreamInfo) string {
-	now := time.Now()
-	return now.Format("20060102") + "+" + strconv.FormatInt(now.Unix(), 10)
-}
+// ── Stream Filter (unchanged from original) ───────────────────────────
 
-// svFilter holds parsed -sv selection criteria.
 type svFilter struct {
 	idRegex      *regexp.Regexp
 	langRegex    *regexp.Regexp
@@ -511,11 +1017,9 @@ type svFilter struct {
 	bwMin        int
 	bwMax        int
 	role         string
-	forMode      string // best[n], worst[n], all
+	forMode      string
 }
 
-// parseSVFilter parses a colon-separated -sv filter string.
-// Format: key=value:key=value:...
 func parseSVFilter(raw string) (*svFilter, error) {
 	f := &svFilter{forMode: "best"}
 
@@ -533,7 +1037,6 @@ func parseSVFilter(raw string) (*svFilter, error) {
 		key := strings.TrimSpace(kv[0])
 		val := strings.TrimSpace(kv[1])
 
-		// Strip surrounding quotes if present
 		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
 			val = val[1 : len(val)-1]
 		}
@@ -641,23 +1144,19 @@ func parseSVFilter(raw string) (*svFilter, error) {
 	return f, nil
 }
 
-// parseHMSDuration parses a duration string like "1h20m30s" or "45s" or "2m".
 func parseHMSDuration(s string) (time.Duration, error) {
 	if s == "" {
 		return 0, nil
 	}
-	// Try Go's built-in duration parser first (handles "1h20m30s")
 	if d, err := time.ParseDuration(s); err == nil {
 		return d, nil
 	}
-	// Try plain seconds
 	if n, err := strconv.Atoi(s); err == nil {
 		return time.Duration(n) * time.Second, nil
 	}
 	return 0, fmt.Errorf("cannot parse duration: %q", s)
 }
 
-// streamMatches checks if a stream passes all criteria in the filter.
 func streamMatches(s *model.StreamInfo, f *svFilter) bool {
 	if f.idRegex != nil && !f.idRegex.MatchString(s.GroupID) {
 		return false
@@ -716,7 +1215,6 @@ func streamMatches(s *model.StreamInfo, f *svFilter) bool {
 	return true
 }
 
-// calcPlaylistDuration returns the total duration of a stream's playlist.
 func calcPlaylistDuration(s *model.StreamInfo) time.Duration {
 	if s.Playlist == nil {
 		return 0
@@ -733,7 +1231,6 @@ func calcPlaylistDuration(s *model.StreamInfo) time.Duration {
 	return time.Duration(total * float64(time.Second))
 }
 
-// selectStreamByFilter applies a -sv filter and selects the matching stream.
 func selectStreamByFilter(streams []model.StreamInfo, svRaw string) *model.StreamInfo {
 	f, err := parseSVFilter(svRaw)
 	if err != nil {
@@ -741,7 +1238,6 @@ func selectStreamByFilter(streams []model.StreamInfo, svRaw string) *model.Strea
 		os.Exit(1)
 	}
 
-	// Filter matching streams
 	type scored struct {
 		stream *model.StreamInfo
 		idx    int
@@ -758,32 +1254,18 @@ func selectStreamByFilter(streams []model.StreamInfo, svRaw string) *model.Strea
 		os.Exit(1)
 	}
 
-	// Sort by bandwidth descending for best/worst logic
 	sort.Slice(matches, func(i, j int) bool {
 		return matches[i].stream.Bandwidth > matches[j].stream.Bandwidth
 	})
 
 	switch {
 	case f.forMode == "all":
-		// Print all matches and let user pick
-		fmt.Println("\nMatched streams:")
-		for i, m := range matches {
-			fmt.Printf("  [%d] %-12s %-16s %s (%d segs)\n",
-				i+1, m.stream.Name, m.stream.Resolution,
-				m.stream.FormatBandwidth(), m.stream.SegmentsCount)
+		// Use interactive selection for "all" mode
+		var matchedStreams []model.StreamInfo
+		for _, m := range matches {
+			matchedStreams = append(matchedStreams, *m.stream)
 		}
-		fmt.Printf("Select [1-%d] (default: 1): ", len(matches))
-		reader := bufio.NewReader(os.Stdin)
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		choice := 1
-		if input != "" {
-			if n, err := fmt.Sscanf(input, "%d", &choice); n != 1 || err != nil || choice < 1 || choice > len(matches) {
-				fmt.Fprintf(os.Stderr, "Invalid choice: %s\n", input)
-				os.Exit(1)
-			}
-		}
-		return matches[choice-1].stream
+		return interactiveStreamSelect(matchedStreams)
 
 	case strings.HasPrefix(f.forMode, "worst"):
 		n := parseForCount(f.forMode)
@@ -792,7 +1274,7 @@ func selectStreamByFilter(streams []model.StreamInfo, svRaw string) *model.Strea
 		}
 		return matches[len(matches)-n].stream
 
-	default: // "best" or "bestN"
+	default:
 		n := parseForCount(f.forMode)
 		if n >= len(matches) {
 			return matches[0].stream
@@ -801,7 +1283,6 @@ func selectStreamByFilter(streams []model.StreamInfo, svRaw string) *model.Strea
 	}
 }
 
-// parseForCount extracts N from "bestN" or "worstN", defaults to 1.
 func parseForCount(mode string) int {
 	mode = strings.TrimPrefix(mode, "best")
 	mode = strings.TrimPrefix(mode, "worst")
@@ -814,49 +1295,6 @@ func parseForCount(mode string) int {
 		return 1
 	}
 	return n
-}
-
-func buildOutputPath(dir, name string, mode model.MergeMode) string {
-	if dir == "" {
-		dir = "."
-	}
-	switch mode {
-	case model.MergeModeBinary:
-		return dir + "/" + name + ".ts"
-	default:
-		return dir + "/" + name + ".mp4"
-	}
-}
-
-// logLevelStr returns a string representation of a log level.
-func logLevelStr(level m3u8dl.LogLevel) string {
-	switch level {
-	case m3u8dl.LogDebug:
-		return "DEBUG"
-	case m3u8dl.LogInfo:
-		return "INFO"
-	case m3u8dl.LogWarn:
-		return "WARN"
-	case m3u8dl.LogError:
-		return "ERROR"
-	default:
-		return "?"
-	}
-}
-
-func formatBytes(b int64) string {
-	if b <= 0 {
-		return "0 B"
-	}
-	units := []string{"B", "KB", "MB", "GB"}
-	val := float64(b)
-	for _, u := range units {
-		if val < 1024 {
-			return fmt.Sprintf("%.1f %s", val, u)
-		}
-		val /= 1024
-	}
-	return fmt.Sprintf("%.1f TB", val)
 }
 
 // stringSlice implements flag.Value for repeatable string flags.

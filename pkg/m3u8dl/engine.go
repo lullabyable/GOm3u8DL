@@ -293,6 +293,7 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 					SegmentsDone: p.SegmentsDone,
 					Percent:      p.Percent,
 					ETA:          p.ETA,
+					Elapsed:      p.Elapsed,
 				})
 			}
 		}),
@@ -459,6 +460,7 @@ func (e *Engine) DownloadOnly(ctx context.Context, req model.DownloadRequest, ha
 					SegmentsDone: p.SegmentsDone,
 					Percent:      p.Percent,
 					ETA:          p.ETA,
+					Elapsed:      p.Elapsed,
 				})
 			}
 		}),
