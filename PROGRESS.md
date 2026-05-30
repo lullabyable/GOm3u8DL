@@ -12,7 +12,7 @@
 |------|------|------|
 | Phase 1 — 核心 SDK (MVP) | ✅ 已完成 | 100% |
 | Phase 2 — 功能完善 | ✅ 已完成 | 100% |
-| Phase 3 — 高级特性 | ⏳ 待开始 | 0% |
+| Phase 3 — 高级特性 | ✅ 已完成 | 100% |
 
 ---
 
@@ -26,7 +26,7 @@
 | model/ | encrypt.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | EncryptInfo / EncryptMethod (7种) |
 | model/ | task.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | TaskStatus (9种状态) + String() |
 | model/ | result.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | DownloadResult + DownloadRequest + MergeMode + AutoSelectRule |
-| m3u8dl/ | engine.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | Engine 完整实现 (GetStreams + Download + HLS/DASH 自动检测) |
+| m3u8dl/ | engine.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | Engine 完整实现 (GetStreams + Download + HLS/DASH/MSS 自动检测) |
 | m3u8dl/ | options.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | Options + 6 个 Option 函数 |
 | m3u8dl/ | events.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | EventHandler + EventHandlerFunc + 3种事件 |
 | parser/hls/ | extractor.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | HLS M3U8 解析 (master + media playlist) |
@@ -61,16 +61,16 @@
 
 ---
 
-## Phase 3 — 高级特性 预计 8-10 天
+## Phase 3 — 高级特性 ✅ 已完成
 
 | 模块 | 文件 | 状态 | 测试 | 提交日期 | 备注 |
 |------|------|------|------|---------|------|
-| downloader/ | live.go | ⏳ 待开始 | — | — | 直播录制 |
-| parser/mss/ | extractor.go | ⏳ 待开始 | — | — | MSS ISM 解析 |
-| downloader/ | split.go | ⏳ 待开始 | — | — | 大文件切片并行 |
-| downloader/ | limiter.go | ⏳ 待开始 | — | — | 全局限速 |
-| merge/ | ffmpeg.go | ⏳ 待开始 | — | — | ffmpeg 后备合并 |
-| m3u8dl/ | config.go | ⏳ 待开始 | — | — | 配置文件读取 |
+| downloader/ | limiter.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | Token bucket 限速器 (Allow/Wait/并发安全) |
+| downloader/ | split.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 大文件分片并行下载 (Range 请求 + 断点续传) |
+| downloader/ | live.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | HLS 直播录制 (轮询 + 去重 + 断点 + ENDLIST 检测) |
+| parser/mss/ | extractor.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | MSS ISM 解析 (StreamIndex/QualityLevel/Chunk) |
+| merge/ | ffmpeg.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | FFmpeg 后备合并 (concat demuxer + TS→MP4 mux) |
+| m3u8dl/ | config.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 配置文件读取 (JSON + FindConfig + ApplyToRequest) |
 
 ---
 
@@ -87,6 +87,7 @@
 | 2026-05-30 | `f3a8747` | feat: 多任务管理器 + CLI 增强 + Engine 实现 |
 | 2026-05-30 | `c519d12` | feat: CENC 解密 + 字幕轨提取 (mp4) |
 | 2026-05-30 | `13345ba` | feat: TS→MP4 remux + fMP4 merge (纯 Go) |
+| 2026-05-30 | (本次) | feat: Phase 3 完成 — 限速器 + 分片下载 + 直播录制 + MSS解析 + FFmpeg合并 + 配置文件 |
 
 ---
 
@@ -97,13 +98,14 @@
 | pkg/model | 3 | ✅ PASS |
 | pkg/parser/hls | 6 | ✅ PASS |
 | pkg/parser/dash | 7 | ✅ PASS |
+| pkg/parser/mss | 11 | ✅ PASS |
 | pkg/crypto | 4 | ✅ PASS |
-| pkg/downloader | 23 | ✅ PASS |
+| pkg/downloader | 44 | ✅ PASS |
 | pkg/merge | 40 | ✅ PASS |
-| pkg/m3u8dl | 12 | ✅ PASS |
+| pkg/m3u8dl | 13 | ✅ PASS |
 | pkg/mp4 | 52 | ✅ PASS |
 | pkg/subtitle | 9 | ✅ PASS |
-| **合计** | **163** | **✅ ALL PASS** |
+| **合计** | **189** | **✅ ALL PASS** |
 
 ---
 

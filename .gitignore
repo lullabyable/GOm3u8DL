@@ -30,4 +30,4 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
-m3u8dl
+/m3u8dl

@@ -15,6 +15,7 @@ import (
 	"github.com/lullabyable/GOm3u8DL/pkg/model"
 	"github.com/lullabyable/GOm3u8DL/pkg/parser/dash"
 	"github.com/lullabyable/GOm3u8DL/pkg/parser/hls"
+	"github.com/lullabyable/GOm3u8DL/pkg/parser/mss"
 )
 
 // Engine is the main entry point for the download engine.
@@ -163,7 +164,19 @@ func (e *Engine) GetStreams(ctx context.Context, url string, headers map[string]
 		return streams, nil
 
 	case "mss":
-		return nil, fmt.Errorf("MSS/ISM parsing not yet implemented")
+		ext := mss.NewExtractor(url)
+		streams, err := ext.Parse(body)
+		if err != nil {
+			return nil, fmt.Errorf("parse MSS: %w", err)
+		}
+		for i := range streams {
+			if streams[i].Playlist != nil {
+				for _, part := range streams[i].Playlist.MediaParts {
+					streams[i].SegmentsCount += len(part.MediaSegments)
+				}
+			}
+		}
+		return streams, nil
 
 	default:
 		return nil, fmt.Errorf("unknown manifest format")
@@ -307,10 +320,24 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 		} else {
 			err = merge.BinaryMerge(segmentPaths, outputPath)
 		}
-	case model.MergeModeTS2MP4, model.MergeModeFMP4, model.MergeModeFFmpeg:
-		// Fallback to binary concat for now
-		emitLog(LogWarn, fmt.Sprintf("Merge mode %s not implemented, using binary concat", mergeModeStr(req.MergeMode)))
-		err = merge.BinaryMerge(segmentPaths, outputPath)
+	case model.MergeModeTS2MP4:
+		emitLog(LogInfo, "Using TS→MP4 remux (pure Go)")
+		err = merge.TS2MP4Remux(segmentPaths, outputPath)
+	case model.MergeModeFMP4:
+		emitLog(LogInfo, "Using fragmented MP4 merge (pure Go)")
+		// FMP4Merge needs init segment path as first arg
+		initPath := ""
+		if stream.Playlist.MediaInit != nil {
+			initPath = filepath.Join(tempDir, "seg_-1.ts")
+		}
+		err = merge.FMP4Merge(initPath, segmentPaths, outputPath)
+	case model.MergeModeFFmpeg:
+		ffmpegPath := req.FFmpegPath
+		if ffmpegPath == "" {
+			ffmpegPath = "ffmpeg"
+		}
+		emitLog(LogInfo, fmt.Sprintf("Using ffmpeg merge (%s)", ffmpegPath))
+		err = merge.FFmpegMerge(segmentPaths, outputPath, ffmpegPath)
 	default:
 		err = merge.BinaryMerge(segmentPaths, outputPath)
 	}

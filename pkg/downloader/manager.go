@@ -21,6 +21,7 @@ type Manager struct {
 	concur    int
 	retries   int
 	onProgress ProgressFunc
+	limiter   *Limiter
 }
 
 // NewManager creates a new download manager.
@@ -53,6 +54,11 @@ func WithHTTPClient(c *http.Client) ManagerOption {
 
 func WithProgressFunc(fn ProgressFunc) ManagerOption {
 	return func(m *Manager) { m.onProgress = fn }
+}
+
+// WithLimiter sets a rate limiter for download speed control.
+func WithLimiter(l *Limiter) ManagerOption {
+	return func(m *Manager) { m.limiter = l }
 }
 
 // DownloadSegments downloads all segments from a playlist and returns the file paths in order.
@@ -117,6 +123,18 @@ func (m *Manager) DownloadSegments(ctx context.Context, playlist *model.Playlist
 			sd := NewSegmentDownloader(m.client, m.retries)
 			for idx := range jobs {
 				seg := allSegments[idx]
+				// Rate limit: wait for permission before downloading
+				if m.limiter != nil {
+					// Estimate segment size for limiter (use ExpectLength if available, else 1 byte as minimum trigger)
+					waitBytes := 1
+					if seg.ExpectLength != nil && *seg.ExpectLength > 0 {
+						waitBytes = int(*seg.ExpectLength)
+					}
+					if err := m.limiter.Wait(ctx, waitBytes); err != nil {
+						results <- indexedResult{index: idx, result: DownloadResult{Segment: seg, Error: err}}
+						continue
+					}
+				}
 				result := sd.Download(ctx, seg, tempDir)
 				if result.Error == nil {
 					tracker.AddBytes(result.Bytes)
