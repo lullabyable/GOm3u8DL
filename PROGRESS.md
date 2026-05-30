@@ -83,6 +83,7 @@
 | 2026-05-30 | (上次) | feat: HLS 解析器 (3文件, 6测试) + AES 解密 (1文件) |
 | 2026-05-30 | `3e2fa00` | feat: Phase 1 完成 — ChaCha20 + downloader(3文件) + merge + CLI |
 | 2026-05-30 | (本次) | feat: Phase 2 进展 — DASH解析器 + MP4解析器 + 字幕(WebVTT/TTML) + 断点续传 |
+| 2026-05-30 | (本次) | feat: CENC 解密 + 字幕轨提取 (mp4) |
 
 ---
 
@@ -99,7 +100,7 @@
 | pkg/m3u8dl | 12 | ✅ PASS |
 | pkg/mp4 | 52 | ✅ PASS |
 | pkg/subtitle | 9 | ✅ PASS |
-| **合计** | **66** | **✅ ALL PASS** |
+| **合计** | **112** | **✅ ALL PASS** |
 
 ---
 
