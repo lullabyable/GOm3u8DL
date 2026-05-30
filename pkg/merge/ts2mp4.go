@@ -50,18 +50,70 @@ func TS2MP4Remux(tsFiles []string, outputPath string, opts ...RemuxOption) error
 	}
 
 	// Build fMP4 output
+	return writeFMP4Output(outputPath, cfg, videoSamples, audioSamples, videoTrack, audioTrack)
+}
+
+// MuxSeparateTSStreams merges separate video and audio TS segment streams
+// into a single fMP4 output. videoSegs and audioSegs are paths to TS files.
+func MuxSeparateTSStreams(videoSegs, audioSegs []string, outputPath string, opts ...RemuxOption) error {
+	if len(videoSegs) == 0 && len(audioSegs) == 0 {
+		return fmt.Errorf("no TS segments provided")
+	}
+
+	cfg := &remuxConfig{
+		videoCodec: "h264",
+		audioCodec: "aac",
+		timescale:  90000,
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	var videoSamples, audioSamples []mp4Sample
+	var videoTrack, audioTrack *trackInfo
+
+	// Parse video TS files
+	for _, path := range videoSegs {
+		vSamples, _, vt, _, err := parseTSFile(path, cfg)
+		if err != nil {
+			return fmt.Errorf("parse video TS %s: %w", path, err)
+		}
+		videoSamples = append(videoSamples, vSamples...)
+		if vt != nil {
+			videoTrack = vt
+		}
+	}
+
+	// Parse audio TS files
+	for _, path := range audioSegs {
+		_, aSamples, _, at, err := parseTSFile(path, cfg)
+		if err != nil {
+			return fmt.Errorf("parse audio TS %s: %w", path, err)
+		}
+		audioSamples = append(audioSamples, aSamples...)
+		if at != nil {
+			audioTrack = at
+		}
+	}
+
+	if len(videoSamples) == 0 && len(audioSamples) == 0 {
+		return fmt.Errorf("no media samples found in TS segments")
+	}
+
+	return writeFMP4Output(outputPath, cfg, videoSamples, audioSamples, videoTrack, audioTrack)
+}
+
+// writeFMP4Output writes ftyp + moov + interleaved moof+mdat for all samples.
+func writeFMP4Output(outputPath string, cfg *remuxConfig, videoSamples, audioSamples []mp4Sample, videoTrack, audioTrack *trackInfo) error {
 	out, err := os.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("create output: %w", err)
 	}
 	defer out.Close()
 
-	// Write ftyp
 	if err := writeFtypBox(out); err != nil {
 		return err
 	}
-
-	// Write moov
 	if err := writeMoovBox(out, cfg, videoTrack, audioTrack); err != nil {
 		return err
 	}

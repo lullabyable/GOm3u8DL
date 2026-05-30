@@ -290,26 +290,33 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	defer os.RemoveAll(audioResult.TempDir)
 	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
 
-	// Mux directly from segments → final output (one step, no intermediate files)
+	// Detect segment format and mux accordingly
 	outputPath := filepath.Join(outputDir, saveName+".mp4")
 	fmt.Fprintf(os.Stderr, "Muxing %d video + %d audio segments → %s\n",
 		len(videoResult.SegmentPaths), len(audioResult.SegmentPaths), outputPath)
 
+	isTSSegments := isTSFormat(videoResult.SegmentPaths)
+
 	var muxErr error
-	switch mode {
-	case model.MergeModeTS2MP4, model.MergeModeFMP4:
+	switch {
+	case isTSSegments:
+		// TS segments → pure Go TS muxer
+		muxErr = merge.MuxSeparateTSStreams(
+			videoResult.SegmentPaths, audioResult.SegmentPaths,
+			outputPath)
+	case mode == model.MergeModeTS2MP4 || mode == model.MergeModeFMP4:
+		// fMP4 segments → pure Go fMP4 muxer
 		muxErr = merge.MuxFMP4FromSegments(
 			videoResult.InitPath, audioResult.InitPath,
 			videoResult.SegmentPaths, audioResult.SegmentPaths,
 			outputPath)
 	default:
-		// For binary/ffmpeg: try pure Go first, fallback to ffmpeg
+		// Try pure Go first, fallback to ffmpeg
 		muxErr = merge.MuxFMP4FromSegments(
 			videoResult.InitPath, audioResult.InitPath,
 			videoResult.SegmentPaths, audioResult.SegmentPaths,
 			outputPath)
 		if muxErr != nil {
-			// Fallback: merge each stream then ffmpeg mux
 			videoMerged := filepath.Join(videoResult.TempDir, "video_merged.mp4")
 			audioMerged := filepath.Join(audioResult.TempDir, "audio_merged.mp4")
 			merge.BinaryMerge(videoResult.SegmentPaths, videoMerged)
@@ -410,6 +417,37 @@ func formatETA(seconds float64) string {
 		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 	}
 	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+// isTSFormat checks if segment files are MPEG-TS format by reading the first bytes.
+func isTSFormat(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	f, err := os.Open(paths[0])
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	buf := make([]byte, 16)
+	n, err := f.Read(buf)
+	if err != nil || n < 4 {
+		return false
+	}
+
+	// TS files start with sync byte 0x47, typically at offset 0
+	if buf[0] == 0x47 {
+		return true
+	}
+	// Some TS files have garbage before the first sync byte
+	for i := 0; i < n; i++ {
+		if buf[i] == 0x47 {
+			return true
+		}
+	}
+
+	return false
 }
 
 // generateSaveName creates a filename using date+timestamp format.
