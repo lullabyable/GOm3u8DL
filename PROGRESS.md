@@ -10,7 +10,7 @@
 
 | 阶段 | 状态 | 进度 |
 |------|------|------|
-| Phase 1 — 核心 SDK (MVP) | 🔄 进行中 | ~30% |
+| Phase 1 — 核心 SDK (MVP) | ✅ 已完成 | 100% |
 | Phase 2 — 功能完善 | ⏳ 待开始 | 0% |
 | Phase 3 — 高级特性 | ⏳ 待开始 | 0% |
 
@@ -32,13 +32,13 @@
 | parser/hls/ | extractor.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | HLS M3U8 解析 (master + media playlist) |
 | parser/hls/ | tags.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | HLS 标签常量 (RFC 8216) |
 | parser/hls/ | key_processor.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | #EXT-X-KEY 解析 + EncryptInfo 构造 |
-| crypto/ | aes.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | AES-128-CBC + AES-128-ECB 解密 |
-| crypto/ | chacha20.go | ⏳ 待开始 | — | — | ChaCha20 解密 |
-| downloader/ | segment.go | ⏳ 待开始 | — | — | 单分段 HTTP 下载 |
-| downloader/ | manager.go | ⏳ 待开始 | — | — | 下载编排管理器 |
-| downloader/ | progress.go | ⏳ 待开始 | — | — | 进度追踪器 |
-| merge/ | binary.go | ⏳ 待开始 | — | — | 纯 Go 二进制拼接 |
-| cmd/m3u8dl/ | main.go | ⏳ 待开始 | — | — | CLI 入口（基础） |
+| crypto/ | aes.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | AES-128-CBC + AES-128-ECB 解密 |
+| crypto/ | chacha20.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | ChaCha20 + XChaCha20 解密 (golang.org/x/crypto) |
+| downloader/ | segment.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 单分段 HTTP 下载 + 解密 + 重试 |
+| downloader/ | manager.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 并发下载编排 (worker pool) |
+| downloader/ | progress.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 进度追踪器 (速度/ETA/百分比) |
+| merge/ | binary.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 纯 Go 二进制拼接 + init segment 支持 |
+| cmd/m3u8dl/ | main.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | CLI 入口 (cobra-free flag 解析) |
 
 ---
 
@@ -81,7 +81,8 @@
 |------|------|------|
 | 2026-05-30 | `46b814c` | init: 项目结构 + 进度报告 + 评估文档 |
 | 2026-05-30 | `ffc554d` | feat: model 层 (6文件) + m3u8dl 框架 (3文件) |
-| 2026-05-30 | (本次) | feat: HLS 解析器 (3文件, 6测试) + AES 解密 (1文件) |
+| 2026-05-30 | (上次) | feat: HLS 解析器 (3文件, 6测试) + AES 解密 (1文件) |
+| 2026-05-30 | (本次) | feat: Phase 1 完成 — ChaCha20 + downloader(3文件) + merge + CLI |
 
 ---
 
@@ -91,8 +92,10 @@
 |----|--------|------|
 | pkg/model | 3 | ✅ PASS |
 | pkg/parser/hls | 6 | ✅ PASS |
-| pkg/crypto | 0 (编译通过) | ✅ OK |
-| **合计** | **9** | **✅ ALL PASS** |
+| pkg/crypto | 4 | ✅ PASS |
+| pkg/downloader | 7 | ✅ PASS |
+| pkg/merge | 5 | ✅ PASS |
+| **合计** | **25** | **✅ ALL PASS** |
 
 ---
 
