@@ -110,3 +110,40 @@ func MuxToMP4(inputPath string, outputPath string, ffmpegPath string) error {
 
 	return nil
 }
+
+// FFmpegMuxAV muxes separate video and audio files into a single MP4 using ffmpeg.
+func FFmpegMuxAV(videoPath, audioPath, outputPath, ffmpegPath string) error {
+	if videoPath == "" || audioPath == "" {
+		return fmt.Errorf("video/audio path is empty")
+	}
+
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
+	}
+
+	if _, err := exec.LookPath(ffmpegPath); err != nil {
+		return fmt.Errorf("ffmpeg not found: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+
+	ctx := context.Background()
+	args := []string{
+		"-i", videoPath,
+		"-i", audioPath,
+		"-c", "copy",
+		"-y",
+		outputPath,
+	}
+
+	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ffmpeg mux AV failed: %w", err)
+	}
+
+	return nil
+}

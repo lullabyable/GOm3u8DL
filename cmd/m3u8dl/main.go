@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lullabyable/GOm3u8DL/pkg/merge"
 	"github.com/lullabyable/GOm3u8DL/pkg/m3u8dl"
 	"github.com/lullabyable/GOm3u8DL/pkg/model"
 )
@@ -128,42 +130,216 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Stream selection: -sv filter or auto-select highest quality
-	var selected *model.StreamInfo
-	if svSelect != "" {
-		selected = selectStreamByFilter(streams, svSelect)
-	} else {
-		// Auto-select: pick highest bandwidth video stream
-		for i := range streams {
-			if streams[i].MediaType == model.MediaTypeVideo {
-				if selected == nil || streams[i].Bandwidth > selected.Bandwidth {
-					selected = &streams[i]
-				}
-			}
-		}
-		if selected == nil {
-			selected = &streams[0]
+	// Separate streams by media type
+	var videoStreams, audioStreams []model.StreamInfo
+	for _, s := range streams {
+		switch s.MediaType {
+		case model.MediaTypeVideo:
+			videoStreams = append(videoStreams, s)
+		case model.MediaTypeAudio:
+			audioStreams = append(audioStreams, s)
+		default:
+			videoStreams = append(videoStreams, s)
 		}
 	}
 
-	if selected == nil {
-		fmt.Fprintln(os.Stderr, "No stream selected")
+	// Auto-generate save name if not provided
+	if saveName == "" {
+		saveName = generateSaveName(url, nil)
+	}
+
+	// Check if we have separate audio+video streams (common in DASH)
+	hasSeparateAV := len(videoStreams) > 0 && len(audioStreams) > 0
+
+	if hasSeparateAV {
+		// Multi-stream: download video and audio separately, then mux
+		downloadSeparateStreams(ctx, engine, url, videoStreams, audioStreams,
+			svSelect, outputDir, saveName, headerMap, concurrency, maxSpeed,
+			mode, autoSub, subOnly)
+	} else {
+		// Single stream: existing logic
+		var selected *model.StreamInfo
+		if svSelect != "" {
+			selected = selectStreamByFilter(streams, svSelect)
+		} else {
+			for i := range streams {
+				if streams[i].MediaType == model.MediaTypeVideo {
+					if selected == nil || streams[i].Bandwidth > selected.Bandwidth {
+						selected = &streams[i]
+					}
+				}
+			}
+			if selected == nil {
+				selected = &streams[0]
+			}
+		}
+
+		if selected == nil {
+			fmt.Fprintln(os.Stderr, "No stream selected")
+			os.Exit(1)
+		}
+
+		fmt.Printf("Selected: %s %s (%s, %d segments)\n",
+			selected.Name, selected.Resolution,
+			selected.FormatBandwidth(), selected.SegmentsCount)
+
+		downloadSingleStream(ctx, engine, url, selected, outputDir, saveName,
+			headerMap, concurrency, maxSpeed, mode, autoSub, subOnly)
+	}
+}
+
+// downloadSeparateStreams downloads video and audio streams separately and muxes them.
+func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url string,
+	videoStreams, audioStreams []model.StreamInfo, svSelect, outputDir, saveName string,
+	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
+	autoSub, subOnly bool) {
+
+	// Select best video
+	var selectedVideo *model.StreamInfo
+	if svSelect != "" {
+		selectedVideo = selectStreamByFilter(videoStreams, svSelect)
+	} else {
+		for i := range videoStreams {
+			if selectedVideo == nil || videoStreams[i].Bandwidth > selectedVideo.Bandwidth {
+				selectedVideo = &videoStreams[i]
+			}
+		}
+	}
+
+	// Select best audio (highest bandwidth)
+	var selectedAudio *model.StreamInfo
+	for i := range audioStreams {
+		if selectedAudio == nil || audioStreams[i].Bandwidth > selectedAudio.Bandwidth {
+			selectedAudio = &audioStreams[i]
+		}
+	}
+
+	if selectedVideo == nil || selectedAudio == nil {
+		fmt.Fprintln(os.Stderr, "Failed to select video/audio streams")
 		os.Exit(1)
 	}
+
+	fmt.Printf("Video: %s %s (%s, %d segs)\n",
+		selectedVideo.Name, selectedVideo.Resolution,
+		selectedVideo.FormatBandwidth(), selectedVideo.SegmentsCount)
+	fmt.Printf("Audio: %s %s (%s, %d segs)\n",
+		selectedAudio.Name, selectedAudio.Language,
+		selectedAudio.FormatBandwidth(), selectedAudio.SegmentsCount)
+
+	// Download to temp files in output dir
+	videoTmp := filepath.Join(outputDir, saveName+"_video_tmp")
+	audioTmp := filepath.Join(outputDir, saveName+"_audio_tmp")
+	videoOut := filepath.Join(videoTmp, saveName+"_video.mp4")
+	audioOut := filepath.Join(audioTmp, saveName+"_audio.mp4")
+
+	// Progress bar
+	var lastProgressTime time.Time
+	handler := m3u8dl.EventHandlerFunc{
+		OnProgressFn: func(e m3u8dl.ProgressEvent) {
+			now := time.Now()
+			if now.Sub(lastProgressTime) < 200*time.Millisecond {
+				return
+			}
+			lastProgressTime = now
+			printProgressBar(e.Percent, e.SegmentsDone, e.Segments, e.Speed, e.ETA)
+		},
+		OnStatusChangeFn: func(e m3u8dl.StatusEvent) {
+			fmt.Fprintf(os.Stderr, "\n[%s] %s\n", e.Status, e.TaskID)
+		},
+		OnLogFn: func(e m3u8dl.LogEvent) {
+			if e.Level >= m3u8dl.LogWarn {
+				fmt.Fprintf(os.Stderr, "\n[%s] %s\n", logLevelStr(e.Level), e.Message)
+			}
+		},
+	}
+
+	// Download video
+	fmt.Fprintf(os.Stderr, "\nDownloading video stream...\n")
+	videoReq := model.DownloadRequest{
+		Stream:             selectedVideo,
+		URL:                url,
+		OutputDir:          videoTmp,
+		SaveName:           saveName + "_video",
+		Headers:            headerMap,
+		ThreadCount:        concurrency,
+		MaxSpeed:           maxSpeed,
+		DownloadRetryCount: 3,
+		MergeMode:          model.MergeModeBinary, // keep raw segments
+		AutoSubtitleFix:    autoSub,
+		SubOnly:            subOnly,
+		DelAfterDone:       false,
+	}
+	if err := engine.Download(ctx, videoReq, handler); err != nil {
+		fmt.Fprintf(os.Stderr, "\nVideo download failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+
+	// Download audio
+	fmt.Fprintf(os.Stderr, "Downloading audio stream...\n")
+	audioReq := model.DownloadRequest{
+		Stream:             selectedAudio,
+		URL:                url,
+		OutputDir:          audioTmp,
+		SaveName:           saveName + "_audio",
+		Headers:            headerMap,
+		ThreadCount:        concurrency,
+		MaxSpeed:           maxSpeed,
+		DownloadRetryCount: 3,
+		MergeMode:          model.MergeModeBinary,
+		AutoSubtitleFix:    autoSub,
+		SubOnly:            subOnly,
+		DelAfterDone:       false,
+	}
+	if err := engine.Download(ctx, audioReq, handler); err != nil {
+		fmt.Fprintf(os.Stderr, "\nAudio download failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+
+	// Mux video + audio
+	outputPath := filepath.Join(outputDir, saveName+".mp4")
+	fmt.Fprintf(os.Stderr, "Muxing video + audio...\n")
+
+	var muxErr error
+	switch mode {
+	case model.MergeModeTS2MP4, model.MergeModeFMP4:
+		muxErr = merge.MuxFMP4Streams(videoOut, audioOut, outputPath)
+	case model.MergeModeFFmpeg:
+		ffmpegPath := "ffmpeg"
+		muxErr = merge.FFmpegMuxAV(videoOut, audioOut, outputPath, ffmpegPath)
+	default:
+		// binary mode: just mux with ffmpeg as fallback
+		muxErr = merge.MuxFMP4Streams(videoOut, audioOut, outputPath)
+		if muxErr != nil {
+			// Try ffmpeg fallback
+			muxErr = merge.FFmpegMuxAV(videoOut, audioOut, outputPath, "ffmpeg")
+		}
+	}
+
+	if muxErr != nil {
+		fmt.Fprintf(os.Stderr, "\nMux failed: %v\n", muxErr)
+		os.Exit(1)
+	}
+
+	// Cleanup temp dirs
+	os.RemoveAll(videoTmp)
+	os.RemoveAll(audioTmp)
+
+	fmt.Printf("Done! Output: %s\n", outputPath)
+}
+
+// downloadSingleStream downloads a single stream (existing behavior).
+func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string,
+	selected *model.StreamInfo, outputDir, saveName string,
+	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
+	autoSub, subOnly bool) {
 
 	fmt.Printf("Selected: %s %s (%s, %d segments)\n",
 		selected.Name, selected.Resolution,
 		selected.FormatBandwidth(), selected.SegmentsCount)
 
-	// Auto-generate save name if not provided
-	if saveName == "" {
-		saveName = generateSaveName(url, selected)
-	}
-
-	// Progress bar state
 	var lastProgressTime time.Time
-
-	// Download
 	req := model.DownloadRequest{
 		Stream:             selected,
 		URL:                url,
@@ -203,7 +379,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Final newline after progress bar
 	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
 	outputPath := buildOutputPath(outputDir, saveName, mode)
 	fmt.Printf("Done! Output: %s\n", outputPath)
