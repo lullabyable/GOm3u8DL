@@ -370,6 +370,124 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	return nil
 }
 
+// DownloadResult holds the result of a DownloadOnly call.
+type DownloadResult struct {
+	SegmentPaths []string // paths to downloaded segment files
+	InitPath     string   // path to init segment (empty if none)
+	TempDir      string   // temp directory (caller must clean up)
+	Playlist     *model.Playlist
+}
+
+// DownloadOnly downloads segments without merging. Returns segment paths
+// and init segment path for the caller to handle merging/muxing.
+// Caller is responsible for cleaning up TempDir.
+func (e *Engine) DownloadOnly(ctx context.Context, req model.DownloadRequest, handler EventHandler) (*DownloadResult, error) {
+	emitLog := func(level LogLevel, msg string) {
+		if handler != nil {
+			handler.OnLog(LogEvent{Level: level, Message: msg})
+		}
+	}
+
+	// Resolve stream
+	stream := req.Stream
+	if stream == nil {
+		if req.URL == "" {
+			return nil, fmt.Errorf("no stream or URL provided")
+		}
+		streams, err := e.GetStreams(ctx, req.URL, req.Headers)
+		if err != nil {
+			return nil, fmt.Errorf("get streams: %w", err)
+		}
+		if len(streams) == 0 {
+			return nil, fmt.Errorf("no streams found")
+		}
+		stream = &streams[0]
+		for i := range streams {
+			if streams[i].MediaType == model.MediaTypeVideo &&
+				streams[i].Bandwidth > stream.Bandwidth {
+				stream = &streams[i]
+			}
+		}
+	}
+
+	if stream.Playlist == nil {
+		return nil, fmt.Errorf("stream has no playlist")
+	}
+
+	// Fetch encryption keys
+	if err := e.fetchEncryptionKeys(ctx, stream.Playlist, req.Headers); err != nil {
+		return nil, fmt.Errorf("fetch encryption keys: %w", err)
+	}
+
+	// Create temp directory
+	tempDir := req.OutputDir
+	if tempDir == "" {
+		tempDir = "."
+	}
+	if req.SaveName != "" {
+		tempDir = filepath.Join(tempDir, req.SaveName+"_tmp")
+	} else {
+		tempDir = filepath.Join(tempDir, "download_tmp")
+	}
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+
+	// Download segments
+	concurrency := req.ThreadCount
+	if concurrency <= 0 {
+		concurrency = e.opts.SegmentConcurrency
+	}
+	retries := req.DownloadRetryCount
+	if retries <= 0 {
+		retries = 3
+	}
+
+	mgr := downloader.NewManager(
+		downloader.WithConcurrency(concurrency),
+		downloader.WithRetries(retries),
+		downloader.WithHTTPClient(e.client),
+		downloader.WithProgressFunc(func(p downloader.Progress) {
+			if handler != nil {
+				handler.OnProgress(ProgressEvent{
+					TaskID:       req.SaveName,
+					Total:        p.Total,
+					Downloaded:   p.Downloaded,
+					Speed:        p.Speed,
+					AvgSpeed:     p.AvgSpeed,
+					Segments:     p.Segments,
+					SegmentsDone: p.SegmentsDone,
+					Percent:      p.Percent,
+					ETA:          p.ETA,
+				})
+			}
+		}),
+	)
+
+	segmentPaths, err := mgr.DownloadSegments(ctx, stream.Playlist, tempDir)
+	if err != nil {
+		return nil, fmt.Errorf("download segments: %w", err)
+	}
+
+	// Find init segment path if exists
+	initPath := ""
+	if stream.Playlist.MediaInit != nil {
+		p := filepath.Join(tempDir, "seg_-1.ts")
+		if _, err := os.Stat(p); err == nil {
+			initPath = p
+		}
+	}
+
+	emitLog(LogInfo, fmt.Sprintf("Downloaded %d segments to %s", len(segmentPaths), tempDir))
+
+	return &DownloadResult{
+		SegmentPaths: segmentPaths,
+		InitPath:     initPath,
+		TempDir:      tempDir,
+		Playlist:     stream.Playlist,
+	}, nil
+}
+
 // DownloadWithAutoSelect auto-selects the best stream and downloads it.
 func (e *Engine) DownloadWithAutoSelect(ctx context.Context, url string, handler EventHandler) error {
 	streams, err := e.GetStreams(ctx, url, nil)

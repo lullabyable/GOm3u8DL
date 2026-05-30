@@ -188,7 +188,8 @@ func main() {
 	}
 }
 
-// downloadSeparateStreams downloads video and audio streams separately and muxes them.
+// downloadSeparateStreams downloads video and audio streams and muxes directly
+// from segments (no intermediate merged files).
 func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url string,
 	videoStreams, audioStreams []model.StreamInfo, svSelect, outputDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
@@ -226,12 +227,6 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		selectedAudio.Name, selectedAudio.Language,
 		selectedAudio.FormatBandwidth(), selectedAudio.SegmentsCount)
 
-	// Download to temp files in output dir
-	videoTmp := filepath.Join(outputDir, saveName+"_video_tmp")
-	audioTmp := filepath.Join(outputDir, saveName+"_audio_tmp")
-	videoOut := filepath.Join(videoTmp, saveName+"_video.mp4")
-	audioOut := filepath.Join(audioTmp, saveName+"_audio.mp4")
-
 	// Progress bar
 	var lastProgressTime time.Time
 	handler := m3u8dl.EventHandlerFunc{
@@ -253,67 +248,73 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		},
 	}
 
-	// Download video
+	// Download video segments only (no merge)
 	fmt.Fprintf(os.Stderr, "\nDownloading video stream...\n")
 	videoReq := model.DownloadRequest{
 		Stream:             selectedVideo,
 		URL:                url,
-		OutputDir:          videoTmp,
+		OutputDir:          outputDir,
 		SaveName:           saveName + "_video",
 		Headers:            headerMap,
 		ThreadCount:        concurrency,
 		MaxSpeed:           maxSpeed,
 		DownloadRetryCount: 3,
-		MergeMode:          model.MergeModeBinary, // keep raw segments
-		AutoSubtitleFix:    autoSub,
-		SubOnly:            subOnly,
 		DelAfterDone:       false,
 	}
-	if err := engine.Download(ctx, videoReq, handler); err != nil {
+	videoResult, err := engine.DownloadOnly(ctx, videoReq, handler)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nVideo download failed: %v\n", err)
 		os.Exit(1)
 	}
+	defer os.RemoveAll(videoResult.TempDir)
 	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
 
-	// Download audio
+	// Download audio segments only (no merge)
 	fmt.Fprintf(os.Stderr, "Downloading audio stream...\n")
 	audioReq := model.DownloadRequest{
 		Stream:             selectedAudio,
 		URL:                url,
-		OutputDir:          audioTmp,
+		OutputDir:          outputDir,
 		SaveName:           saveName + "_audio",
 		Headers:            headerMap,
 		ThreadCount:        concurrency,
 		MaxSpeed:           maxSpeed,
 		DownloadRetryCount: 3,
-		MergeMode:          model.MergeModeBinary,
-		AutoSubtitleFix:    autoSub,
-		SubOnly:            subOnly,
 		DelAfterDone:       false,
 	}
-	if err := engine.Download(ctx, audioReq, handler); err != nil {
+	audioResult, err := engine.DownloadOnly(ctx, audioReq, handler)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nAudio download failed: %v\n", err)
 		os.Exit(1)
 	}
+	defer os.RemoveAll(audioResult.TempDir)
 	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
 
-	// Mux video + audio
+	// Mux directly from segments → final output (one step, no intermediate files)
 	outputPath := filepath.Join(outputDir, saveName+".mp4")
-	fmt.Fprintf(os.Stderr, "Muxing video + audio...\n")
+	fmt.Fprintf(os.Stderr, "Muxing %d video + %d audio segments → %s\n",
+		len(videoResult.SegmentPaths), len(audioResult.SegmentPaths), outputPath)
 
 	var muxErr error
 	switch mode {
 	case model.MergeModeTS2MP4, model.MergeModeFMP4:
-		muxErr = merge.MuxFMP4Streams(videoOut, audioOut, outputPath)
-	case model.MergeModeFFmpeg:
-		ffmpegPath := "ffmpeg"
-		muxErr = merge.FFmpegMuxAV(videoOut, audioOut, outputPath, ffmpegPath)
+		muxErr = merge.MuxFMP4FromSegments(
+			videoResult.InitPath, audioResult.InitPath,
+			videoResult.SegmentPaths, audioResult.SegmentPaths,
+			outputPath)
 	default:
-		// binary mode: just mux with ffmpeg as fallback
-		muxErr = merge.MuxFMP4Streams(videoOut, audioOut, outputPath)
+		// For binary/ffmpeg: try pure Go first, fallback to ffmpeg
+		muxErr = merge.MuxFMP4FromSegments(
+			videoResult.InitPath, audioResult.InitPath,
+			videoResult.SegmentPaths, audioResult.SegmentPaths,
+			outputPath)
 		if muxErr != nil {
-			// Try ffmpeg fallback
-			muxErr = merge.FFmpegMuxAV(videoOut, audioOut, outputPath, "ffmpeg")
+			// Fallback: merge each stream then ffmpeg mux
+			videoMerged := filepath.Join(videoResult.TempDir, "video_merged.mp4")
+			audioMerged := filepath.Join(audioResult.TempDir, "audio_merged.mp4")
+			merge.BinaryMerge(videoResult.SegmentPaths, videoMerged)
+			merge.BinaryMerge(audioResult.SegmentPaths, audioMerged)
+			muxErr = merge.FFmpegMuxAV(videoMerged, audioMerged, outputPath, "ffmpeg")
 		}
 	}
 
@@ -321,10 +322,6 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		fmt.Fprintf(os.Stderr, "\nMux failed: %v\n", muxErr)
 		os.Exit(1)
 	}
-
-	// Cleanup temp dirs
-	os.RemoveAll(videoTmp)
-	os.RemoveAll(audioTmp)
 
 	fmt.Printf("Done! Output: %s\n", outputPath)
 }
