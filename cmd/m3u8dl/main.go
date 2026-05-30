@@ -1,15 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
+	"time"
 
-	"github.com/lullabyable/GOm3u8DL/pkg/downloader"
 	"github.com/lullabyable/GOm3u8DL/pkg/m3u8dl"
 	"github.com/lullabyable/GOm3u8DL/pkg/model"
 )
@@ -21,17 +23,18 @@ var (
 
 func main() {
 	var (
-		url          string
-		outputDir    string
-		saveName     string
-		concurrency  int
-		maxSpeed     int64
-		mergeMode    string
-		headers      stringSlice
-		keys         stringSlice
-		autoSub      bool
-		subOnly      bool
-		showVersion  bool
+		url         string
+		outputDir   string
+		saveName    string
+		concurrency int
+		maxSpeed    int64
+		mergeMode   string
+		headers     stringSlice
+		keys        stringSlice
+		autoSub     bool
+		subOnly     bool
+		showVersion bool
+		autoSelect  bool
 	)
 
 	flag.StringVar(&url, "url", "", "M3U8/MPD/ISM URL (required)")
@@ -45,6 +48,7 @@ func main() {
 	flag.BoolVar(&autoSub, "auto-subtitle-fix", false, "Auto-fix subtitle timing")
 	flag.BoolVar(&subOnly, "sub-only", false, "Download subtitles only")
 	flag.BoolVar(&showVersion, "version", false, "Show version")
+	flag.BoolVar(&autoSelect, "auto-select", false, "Auto-select best quality stream")
 	flag.Parse()
 
 	if showVersion {
@@ -109,13 +113,6 @@ func main() {
 		cancel()
 	}()
 
-	// Progress handler
-	progressFn := func(p downloader.Progress) {
-		fmt.Fprintf(os.Stderr, "\r  %.1f%% | %d/%d segments | %s/s | ETA %.0fs   ",
-			p.Percent, p.SegmentsDone, p.Segments,
-			formatBytes(p.Speed), p.ETA)
-	}
-
 	// Get streams
 	fmt.Printf("Parsing: %s\n", url)
 	streams, err := engine.GetStreams(ctx, url, headerMap)
@@ -129,16 +126,40 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Select stream (pick highest bandwidth)
+	// Interactive stream selection or auto-select
 	var selected *model.StreamInfo
-	for i := range streams {
-		s := &streams[i]
-		if selected == nil || s.Bandwidth > selected.Bandwidth {
-			selected = s
+	if autoSelect || len(streams) == 1 {
+		// Auto-select: pick highest bandwidth video stream
+		for i := range streams {
+			if streams[i].MediaType == model.MediaTypeVideo {
+				if selected == nil || streams[i].Bandwidth > selected.Bandwidth {
+					selected = &streams[i]
+				}
+			}
 		}
+		if selected == nil {
+			selected = &streams[0]
+		}
+	} else {
+		selected = selectStreamInteractive(streams)
 	}
 
-	fmt.Printf("Selected: %s (%s)\n", selected.Resolution, selected.FormatBandwidth())
+	if selected == nil {
+		fmt.Fprintln(os.Stderr, "No stream selected")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Selected: %s %s (%s, %d segments)\n",
+		selected.Name, selected.Resolution,
+		selected.FormatBandwidth(), selected.SegmentsCount)
+
+	// Auto-generate save name if not provided
+	if saveName == "" {
+		saveName = generateSaveName(url, selected)
+	}
+
+	// Progress bar state
+	var lastProgressTime time.Time
 
 	// Download
 	req := model.DownloadRequest{
@@ -153,21 +174,24 @@ func main() {
 		MergeMode:          mode,
 		AutoSubtitleFix:    autoSub,
 		SubOnly:            subOnly,
+		DelAfterDone:       true,
 	}
 
 	handler := m3u8dl.EventHandlerFunc{
 		OnProgressFn: func(e m3u8dl.ProgressEvent) {
-			progressFn(downloader.Progress{
-				Percent:      e.Percent,
-				SegmentsDone: e.SegmentsDone,
-				Segments:     e.Segments,
-				Speed:        e.Speed,
-				ETA:          e.ETA,
-			})
+			now := time.Now()
+			if now.Sub(lastProgressTime) < 200*time.Millisecond {
+				return
+			}
+			lastProgressTime = now
+			printProgressBar(e.Percent, e.SegmentsDone, e.Segments, e.Speed, e.ETA)
+		},
+		OnStatusChangeFn: func(e m3u8dl.StatusEvent) {
+			fmt.Fprintf(os.Stderr, "\n[%s] %s\n", e.Status, e.TaskID)
 		},
 		OnLogFn: func(e m3u8dl.LogEvent) {
 			if e.Level >= m3u8dl.LogWarn {
-				fmt.Fprintf(os.Stderr, "\n[%s] %s", logLevelStr(e.Level), e.Message)
+				fmt.Fprintf(os.Stderr, "\n[%s] %s\n", logLevelStr(e.Level), e.Message)
 			}
 		},
 	}
@@ -177,11 +201,164 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("\nDone!")
+	// Final newline after progress bar
+	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+	outputPath := buildOutputPath(outputDir, saveName, mode)
+	fmt.Printf("Done! Output: %s\n", outputPath)
+}
 
-	// Cleanup if requested
-	if req.DelAfterDone {
-		_ = downloader.CleanupTemp(outputDir + "/temp")
+// selectStreamInteractive displays streams and lets the user choose.
+func selectStreamInteractive(streams []model.StreamInfo) *model.StreamInfo {
+	// Group by media type
+	videoStreams := make([]model.StreamInfo, 0)
+	audioStreams := make([]model.StreamInfo, 0)
+	subStreams := make([]model.StreamInfo, 0)
+
+	for _, s := range streams {
+		switch s.MediaType {
+		case model.MediaTypeVideo:
+			videoStreams = append(videoStreams, s)
+		case model.MediaTypeAudio:
+			audioStreams = append(audioStreams, s)
+		case model.MediaTypeSubtitles:
+			subStreams = append(subStreams, s)
+		default:
+			videoStreams = append(videoStreams, s)
+		}
+	}
+
+	// Sort video streams by bandwidth (highest first)
+	sort.Slice(videoStreams, func(i, j int) bool {
+		return videoStreams[i].Bandwidth > videoStreams[j].Bandwidth
+	})
+
+	fmt.Println("\nAvailable streams:")
+	fmt.Println(strings.Repeat("─", 72))
+
+	allStreams := make([]model.StreamInfo, 0)
+	idx := 1
+
+	if len(videoStreams) > 0 {
+		fmt.Println("  Video:")
+		for _, s := range videoStreams {
+			segInfo := ""
+			if s.SegmentsCount > 0 {
+				segInfo = fmt.Sprintf(" [%d segs]", s.SegmentsCount)
+			}
+			fmt.Printf("    [%d] %-12s %-16s %s%s\n",
+				idx, s.Name, s.Resolution, s.FormatBandwidth(), segInfo)
+			allStreams = append(allStreams, s)
+			idx++
+		}
+	}
+
+	if len(audioStreams) > 0 {
+		fmt.Println("  Audio:")
+		for _, s := range audioStreams {
+			lang := s.Language
+			if lang == "" {
+				lang = "unknown"
+			}
+			fmt.Printf("    [%d] %-12s %-16s %s\n", idx, s.Name, lang, s.GroupID)
+			allStreams = append(allStreams, s)
+			idx++
+		}
+	}
+
+	if len(subStreams) > 0 {
+		fmt.Println("  Subtitles:")
+		for _, s := range subStreams {
+			lang := s.Language
+			if lang == "" {
+				lang = "unknown"
+			}
+			fmt.Printf("    [%d] %-12s %-16s\n", idx, s.Name, lang)
+			allStreams = append(subStreams, s)
+			idx++
+		}
+	}
+
+	fmt.Println(strings.Repeat("─", 72))
+	fmt.Printf("Select stream [1-%d] (default: 1): ", len(allStreams))
+
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	choice := 1
+	if input != "" {
+		if n, err := fmt.Sscanf(input, "%d", &choice); n != 1 || err != nil || choice < 1 || choice > len(allStreams) {
+			fmt.Fprintf(os.Stderr, "Invalid choice: %s\n", input)
+			return nil
+		}
+	}
+
+	return &allStreams[choice-1]
+}
+
+// printProgressBar renders a single-line progress bar.
+func printProgressBar(pct float64, done, total int, speed int64, eta float64) {
+	barWidth := 30
+	filled := int(pct / 100 * float64(barWidth))
+	if filled > barWidth {
+		filled = barWidth
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+
+	speedStr := formatBytes(speed)
+	etaStr := formatETA(eta)
+
+	fmt.Fprintf(os.Stderr, "\r  %s %5.1f%% %d/%d %s/s ETA %s   ",
+		bar, pct, done, total, speedStr, etaStr)
+}
+
+func formatETA(seconds float64) string {
+	if seconds <= 0 || seconds > 36000 {
+		return "--:--"
+	}
+	d := time.Duration(seconds * float64(time.Second))
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m >= 60 {
+		h := m / 60
+		m = m % 60
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+// generateSaveName creates a filename from the URL and stream info.
+func generateSaveName(url string, stream *model.StreamInfo) string {
+	// Extract last path segment
+	parts := strings.Split(url, "/")
+	name := "output"
+	if len(parts) > 0 {
+		last := parts[len(parts)-1]
+		if idx := strings.Index(last, "?"); idx >= 0 {
+			last = last[:idx]
+		}
+		if idx := strings.Index(last, "."); idx >= 0 {
+			last = last[:idx]
+		}
+		if last != "" {
+			name = last
+		}
+	}
+	if stream.Resolution != "" && stream.Resolution != "unknown" {
+		name += "_" + strings.ReplaceAll(stream.Resolution, "x", "x")
+	}
+	return name
+}
+
+func buildOutputPath(dir, name string, mode model.MergeMode) string {
+	if dir == "" {
+		dir = "."
+	}
+	switch mode {
+	case model.MergeModeBinary:
+		return dir + "/" + name + ".ts"
+	default:
+		return dir + "/" + name + ".mp4"
 	}
 }
 

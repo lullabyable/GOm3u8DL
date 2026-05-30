@@ -173,3 +173,237 @@ func CleanupTemp(tempDir string) error {
 func SegmentPath(tempDir string, index int) string {
 	return filepath.Join(tempDir, fmt.Sprintf("seg_%d.ts", index))
 }
+
+// ---------------------------------------------------------------------------
+// TaskManager — multi-task concurrent download orchestrator
+// ---------------------------------------------------------------------------
+
+// TaskResult holds the result of a completed task.
+type TaskResult struct {
+	TaskID     string
+	Status     model.TaskStatus
+	OutputPath string
+	Error      error
+	Duration   float64
+}
+
+// TaskState tracks individual task state.
+type TaskState struct {
+	ID        string
+	Status    model.TaskStatus
+	Progress  Progress
+	StartTime time.Time
+}
+
+// TaskManager manages multiple concurrent download tasks.
+type TaskManager struct {
+	maxTasks   int
+	sem        chan struct{}
+	results    chan TaskResult
+	mu         sync.Mutex
+	tasks      map[string]*TaskState
+	wg         sync.WaitGroup
+	progressFn map[string]func(Progress)
+}
+
+// NewTaskManager creates a task manager with max concurrent tasks.
+func NewTaskManager(maxConcurrent int) *TaskManager {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	return &TaskManager{
+		maxTasks:   maxConcurrent,
+		sem:        make(chan struct{}, maxConcurrent),
+		results:    make(chan TaskResult, maxConcurrent*2),
+		tasks:      make(map[string]*TaskState),
+		progressFn: make(map[string]func(Progress)),
+	}
+}
+
+// Submit submits a download function as a task. Returns taskID.
+func (tm *TaskManager) Submit(taskID string, fn func(ctx context.Context) error) error {
+	tm.mu.Lock()
+	if _, exists := tm.tasks[taskID]; exists {
+		tm.mu.Unlock()
+		return fmt.Errorf("task %s already exists", taskID)
+	}
+	tm.tasks[taskID] = &TaskState{
+		ID:        taskID,
+		Status:    model.TaskStatusPending,
+		StartTime: time.Now(),
+	}
+	tm.mu.Unlock()
+
+	tm.wg.Add(1)
+	go func() {
+		defer tm.wg.Done()
+
+		// Acquire semaphore
+		select {
+		case tm.sem <- struct{}{}:
+		case <-context.Background().Done():
+			// Should not happen without a real context; guard anyway
+			return
+		}
+		defer func() { <-tm.sem }()
+
+		tm.mu.Lock()
+		tm.tasks[taskID].Status = model.TaskStatusDownloading
+		tm.mu.Unlock()
+
+		start := time.Now()
+		err := fn(context.Background())
+		dur := time.Since(start).Seconds()
+
+		status := model.TaskStatusDone
+		if err != nil {
+			status = model.TaskStatusFailed
+		}
+
+		tm.mu.Lock()
+		tm.tasks[taskID].Status = status
+		outputPath := ""
+		// Copy progress info to result
+		tm.mu.Unlock()
+
+		tm.results <- TaskResult{
+			TaskID:     taskID,
+			Status:     status,
+			OutputPath: outputPath,
+			Error:      err,
+			Duration:   dur,
+		}
+	}()
+
+	return nil
+}
+
+// SubmitWithContext submits a download function with a cancellable context.
+func (tm *TaskManager) SubmitWithContext(ctx context.Context, taskID string, fn func(ctx context.Context) error) error {
+	tm.mu.Lock()
+	if _, exists := tm.tasks[taskID]; exists {
+		tm.mu.Unlock()
+		return fmt.Errorf("task %s already exists", taskID)
+	}
+	tm.tasks[taskID] = &TaskState{
+		ID:        taskID,
+		Status:    model.TaskStatusPending,
+		StartTime: time.Now(),
+	}
+	tm.mu.Unlock()
+
+	tm.wg.Add(1)
+	go func() {
+		defer tm.wg.Done()
+
+		// Acquire semaphore or bail on context cancel
+		select {
+		case tm.sem <- struct{}{}:
+		case <-ctx.Done():
+			tm.mu.Lock()
+			tm.tasks[taskID].Status = model.TaskStatusCancelled
+			tm.mu.Unlock()
+			tm.results <- TaskResult{
+				TaskID: taskID,
+				Status: model.TaskStatusCancelled,
+				Error:  ctx.Err(),
+			}
+			return
+		}
+		defer func() { <-tm.sem }()
+
+		tm.mu.Lock()
+		tm.tasks[taskID].Status = model.TaskStatusDownloading
+		tm.mu.Unlock()
+
+		start := time.Now()
+		err := fn(ctx)
+		dur := time.Since(start).Seconds()
+
+		status := model.TaskStatusDone
+		if err != nil {
+			if ctx.Err() != nil {
+				status = model.TaskStatusCancelled
+			} else {
+				status = model.TaskStatusFailed
+			}
+		}
+
+		tm.mu.Lock()
+		tm.tasks[taskID].Status = status
+		tm.mu.Unlock()
+
+		tm.results <- TaskResult{
+			TaskID:   taskID,
+			Status:   status,
+			Error:    err,
+			Duration: dur,
+		}
+	}()
+
+	return nil
+}
+
+// Wait waits for all tasks to complete and returns results.
+func (tm *TaskManager) Wait(ctx context.Context) []TaskResult {
+	// Close results channel once all tasks finish
+	go func() {
+		tm.wg.Wait()
+		close(tm.results)
+	}()
+
+	var results []TaskResult
+	for {
+		select {
+		case r, ok := <-tm.results:
+			if !ok {
+				return results
+			}
+			results = append(results, r)
+		case <-ctx.Done():
+			// Context cancelled — drain remaining results
+			for r := range tm.results {
+				results = append(results, r)
+			}
+			return results
+		}
+	}
+}
+
+// ActiveTasks returns currently running task states.
+func (tm *TaskManager) ActiveTasks() []TaskState {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	states := make([]TaskState, 0, len(tm.tasks))
+	for _, t := range tm.tasks {
+		states = append(states, TaskState{
+			ID:        t.ID,
+			Status:    t.Status,
+			Progress:  t.Progress,
+			StartTime: t.StartTime,
+		})
+	}
+	return states
+}
+
+// OnProgress sets a callback for task progress updates.
+func (tm *TaskManager) OnProgress(taskID string, fn func(Progress)) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.progressFn[taskID] = fn
+}
+
+// ReportProgress reports progress for a specific task (called by download functions).
+func (tm *TaskManager) ReportProgress(taskID string, p Progress) {
+	tm.mu.Lock()
+	if state, ok := tm.tasks[taskID]; ok {
+		state.Progress = p
+	}
+	fn := tm.progressFn[taskID]
+	tm.mu.Unlock()
+
+	if fn != nil {
+		fn(p)
+	}
+}

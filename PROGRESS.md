@@ -11,7 +11,7 @@
 | 阶段 | 状态 | 进度 |
 |------|------|------|
 | Phase 1 — 核心 SDK (MVP) | ✅ 已完成 | 100% |
-| Phase 2 — 功能完善 | 🔄 进行中 | ~70% |
+| Phase 2 — 功能完善 | 🔄 进行中 | ~85% |
 | Phase 3 — 高级特性 | ⏳ 待开始 | 0% |
 
 ---
@@ -52,12 +52,12 @@
 | subtitle/ | webvtt.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | WebVTT 解析 + SRT 转换 + 时间偏移 |
 | subtitle/ | ttml.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | TTML XML 解析 → WebVTT |
 | downloader/ | resume.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 断点续传状态持久化 |
-| mp4/ | decrypt.go | ⏳ 待开始 | — | — | CENC 解密 |
-| mp4/ | subtitle.go | ⏳ 待开始 | — | — | 字幕轨提取 |
+| mp4/ | decrypt.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | CENC 解密 (CTR/CBC + subsample) |
+| mp4/ | subtitle.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 字幕轨提取 (sbtl/text) |
 | merge/ | ts2mp4.go | ⏳ 待开始 | — | — | TS→MP4 remux (gomedia) |
 | merge/ | fmp4.go | ⏳ 待开始 | — | — | fragmented MP4 (mp4ff) |
-| downloader/ | manager.go | ⏳ 待开始 | — | — | 多任务并发管理 |
-| cmd/m3u8dl/ | main.go | ⏳ 待开始 | — | — | CLI 完善 |
+| downloader/ | manager.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | 多任务并发管理 (TaskManager) |
+| cmd/m3u8dl/ | main.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | CLI 完善 (交互式选择 + 进度条 + 自动检测) |
 
 ---
 
@@ -94,11 +94,12 @@
 | pkg/parser/hls | 6 | ✅ PASS |
 | pkg/parser/dash | 7 | ✅ PASS |
 | pkg/crypto | 4 | ✅ PASS |
-| pkg/downloader | 14 | ✅ PASS |
+| pkg/downloader | 23 | ✅ PASS |
 | pkg/merge | 5 | ✅ PASS |
-| pkg/mp4 | 6 | ✅ PASS |
+| pkg/m3u8dl | 12 | ✅ PASS |
+| pkg/mp4 | 52 | ✅ PASS |
 | pkg/subtitle | 9 | ✅ PASS |
-| **合计** | **54** | **✅ ALL PASS** |
+| **合计** | **66** | **✅ ALL PASS** |
 
 ---
 
