@@ -242,7 +242,13 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	emitLog(LogInfo, fmt.Sprintf("Stream: %s %s (%d segments)",
 		stream.Name, stream.Resolution, len(allSegments)))
 
-	// 2. Create temp directory
+	// 2. Fetch encryption keys if needed
+	if err := e.fetchEncryptionKeys(ctx, stream.Playlist, req.Headers); err != nil {
+		emitStatus(model.TaskStatusFailed)
+		return fmt.Errorf("fetch encryption keys: %w", err)
+	}
+
+	// 3. Create temp directory
 	tempDir := req.OutputDir
 	if tempDir == "" {
 		tempDir = "."
@@ -424,4 +430,90 @@ func mergeModeStr(m model.MergeMode) string {
 	default:
 		return "unknown"
 	}
+}
+
+// fetchEncryptionKeys fetches encryption keys for all segments in the playlist.
+// It collects unique key URLs, fetches each key once, and sets the Key bytes
+// on all segments that reference that URL.
+func (e *Engine) fetchEncryptionKeys(ctx context.Context, playlist *model.Playlist, headers map[string]string) error {
+	if playlist == nil {
+		return nil
+	}
+
+	// Collect unique key URLs
+	type keyInfo struct {
+		url    string
+		needed bool
+	}
+	keyMap := make(map[string]*keyInfo) // keyURL -> info
+
+	for _, part := range playlist.MediaParts {
+		for _, seg := range part.MediaSegments {
+			if seg.EncryptInfo.Method != model.EncryptMethodNone && seg.EncryptInfo.KeyURL != "" {
+				if _, exists := keyMap[seg.EncryptInfo.KeyURL]; !exists {
+					keyMap[seg.EncryptInfo.KeyURL] = &keyInfo{url: seg.EncryptInfo.KeyURL}
+				}
+			}
+		}
+	}
+
+	if len(keyMap) == 0 {
+		return nil
+	}
+
+	// Fetch each unique key
+	fetchedKeys := make(map[string][]byte)
+	for url, info := range keyMap {
+		keyBytes, err := e.fetchKey(ctx, info.url, headers)
+		if err != nil {
+			return fmt.Errorf("fetch key %s: %w", url, err)
+		}
+		fetchedKeys[url] = keyBytes
+	}
+
+	// Set key bytes on all segments
+	for i := range playlist.MediaParts {
+		for j := range playlist.MediaParts[i].MediaSegments {
+			seg := &playlist.MediaParts[i].MediaSegments[j]
+			if seg.EncryptInfo.KeyURL != "" {
+				if key, ok := fetchedKeys[seg.EncryptInfo.KeyURL]; ok {
+					seg.EncryptInfo.Key = key
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// fetchKey downloads an encryption key from the given URL.
+func (e *Engine) fetchKey(ctx context.Context, keyURL string, headers map[string]string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, keyURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http get: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http status %d for key %s", resp.StatusCode, keyURL)
+	}
+
+	key, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read key body: %w", err)
+	}
+
+	if len(key) != 16 {
+		return nil, fmt.Errorf("invalid AES-128 key length: %d bytes (expected 16)", len(key))
+	}
+
+	return key, nil
 }
