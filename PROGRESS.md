@@ -10,7 +10,7 @@
 
 | 阶段 | 状态 | 进度 |
 |------|------|------|
-| Phase 1 — 核心 SDK (MVP) | 🔄 进行中 | 0% |
+| Phase 1 — 核心 SDK (MVP) | 🔄 进行中 | ~15% |
 | Phase 2 — 功能完善 | ⏳ 待开始 | 0% |
 | Phase 3 — 高级特性 | ⏳ 待开始 | 0% |
 
@@ -20,15 +20,15 @@
 
 | 模块 | 文件 | 状态 | 测试 | 提交日期 | 备注 |
 |------|------|------|------|---------|------|
-| model/ | stream.go | ⏳ 待开始 | — | — | StreamInfo 数据结构 |
-| model/ | segment.go | ⏳ 待开始 | — | — | MediaSegment 数据结构 |
-| model/ | playlist.go | ⏳ 待开始 | — | — | Playlist 数据结构 |
-| model/ | encrypt.go | ⏳ 待开始 | — | — | EncryptInfo / EncryptMethod |
-| model/ | task.go | ⏳ 待开始 | — | — | DownloadTask / TaskStatus |
-| model/ | result.go | ⏳ 待开始 | — | — | DownloadResult |
-| m3u8dl/ | engine.go | ⏳ 待开始 | — | — | Engine 主入口 |
-| m3u8dl/ | options.go | ⏳ 待开始 | — | — | 全局配置项 |
-| m3u8dl/ | events.go | ⏳ 待开始 | — | — | 事件类型定义 |
+| model/ | stream.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | StreamInfo + FormatBandwidth + BaseURL |
+| model/ | segment.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | MediaSegment + MediaPart |
+| model/ | playlist.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | Playlist 数据结构 |
+| model/ | encrypt.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | EncryptInfo / EncryptMethod (7种) |
+| model/ | task.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | TaskStatus (9种状态) + String() |
+| model/ | result.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | DownloadResult + DownloadRequest + MergeMode + AutoSelectRule |
+| m3u8dl/ | engine.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | Engine 框架 (GetStreams/Download 待实现) |
+| m3u8dl/ | options.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | Options + 6 个 Option 函数 |
+| m3u8dl/ | events.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | EventHandler + EventHandlerFunc + 3种事件 |
 | parser/hls/ | extractor.go | ⏳ 待开始 | — | — | HLS M3U8 解析 |
 | parser/hls/ | tags.go | ⏳ 待开始 | — | — | HLS 标签常量 |
 | parser/hls/ | key_processor.go | ⏳ 待开始 | — | — | HLS KEY 处理 |
@@ -79,7 +79,8 @@
 
 | 日期 | 提交 | 内容 |
 |------|------|------|
-| 2026-05-30 | init | 项目初始化，目录结构 + 进度报告 |
+| 2026-05-30 | `46b814c` | init: 项目结构 + 进度报告 + 评估文档 |
+| 2026-05-30 | (本次) | model 层全部完成 + m3u8dl 框架 (engine/events/options) |
 
 ---
 
