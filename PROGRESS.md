@@ -10,7 +10,7 @@
 
 | 阶段 | 状态 | 进度 |
 |------|------|------|
-| Phase 1 — 核心 SDK (MVP) | 🔄 进行中 | ~15% |
+| Phase 1 — 核心 SDK (MVP) | 🔄 进行中 | ~30% |
 | Phase 2 — 功能完善 | ⏳ 待开始 | 0% |
 | Phase 3 — 高级特性 | ⏳ 待开始 | 0% |
 
@@ -29,10 +29,10 @@
 | m3u8dl/ | engine.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | Engine 框架 (GetStreams/Download 待实现) |
 | m3u8dl/ | options.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | Options + 6 个 Option 函数 |
 | m3u8dl/ | events.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | EventHandler + EventHandlerFunc + 3种事件 |
-| parser/hls/ | extractor.go | ⏳ 待开始 | — | — | HLS M3U8 解析 |
-| parser/hls/ | tags.go | ⏳ 待开始 | — | — | HLS 标签常量 |
-| parser/hls/ | key_processor.go | ⏳ 待开始 | — | — | HLS KEY 处理 |
-| crypto/ | aes.go | ⏳ 待开始 | — | — | AES-128-CBC/ECB 解密 |
+| parser/hls/ | extractor.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | HLS M3U8 解析 (master + media playlist) |
+| parser/hls/ | tags.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | HLS 标签常量 (RFC 8216) |
+| parser/hls/ | key_processor.go | ✅ 已完成 | ✅ PASS | 2026-05-30 | #EXT-X-KEY 解析 + EncryptInfo 构造 |
+| crypto/ | aes.go | ✅ 已完成 | ✅ 编译通过 | 2026-05-30 | AES-128-CBC + AES-128-ECB 解密 |
 | crypto/ | chacha20.go | ⏳ 待开始 | — | — | ChaCha20 解密 |
 | downloader/ | segment.go | ⏳ 待开始 | — | — | 单分段 HTTP 下载 |
 | downloader/ | manager.go | ⏳ 待开始 | — | — | 下载编排管理器 |
@@ -80,7 +80,19 @@
 | 日期 | 提交 | 内容 |
 |------|------|------|
 | 2026-05-30 | `46b814c` | init: 项目结构 + 进度报告 + 评估文档 |
-| 2026-05-30 | (本次) | model 层全部完成 + m3u8dl 框架 (engine/events/options) |
+| 2026-05-30 | `ffc554d` | feat: model 层 (6文件) + m3u8dl 框架 (3文件) |
+| 2026-05-30 | (本次) | feat: HLS 解析器 (3文件, 6测试) + AES 解密 (1文件) |
+
+---
+
+## 测试汇总
+
+| 包 | 测试数 | 状态 |
+|----|--------|------|
+| pkg/model | 3 | ✅ PASS |
+| pkg/parser/hls | 6 | ✅ PASS |
+| pkg/crypto | 0 (编译通过) | ✅ OK |
+| **合计** | **9** | **✅ ALL PASS** |
 
 ---
 
