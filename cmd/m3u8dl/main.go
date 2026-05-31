@@ -141,14 +141,14 @@ func main() {
 		} else {
 			fmt.Printf("%s[info]%s Config loaded: %s\n", cyan, reset, cfgPath)
 			// Apply config defaults — only for flags NOT explicitly set via CLI
-			if !cliFlags["concurrency"] && cfg.Concurrency > 0 {
-				concurrency = cfg.Concurrency
+			if !cliFlags["concurrency"] && cfg.ThreadNum > 0 {
+				concurrency = cfg.ThreadNum
 			}
 			if !cliFlags["max-speed"] && cfg.MaxSpeed > 0 {
 				maxSpeed = cfg.MaxSpeed
 			}
-			if !cliFlags["save-dir"] && cfg.OutputDir != "" && cfg.OutputDir != "/downloads" {
-				outputDir = cfg.OutputDir
+			if !cliFlags["save-dir"] && cfg.SaveDir != "" && cfg.SaveDir != "/downloads" {
+				outputDir = cfg.SaveDir
 			}
 			if !cliFlags["merge"] && cfg.Merge != "" {
 				mergeMode = cfg.Merge

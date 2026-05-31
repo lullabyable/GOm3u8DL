@@ -14,17 +14,14 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("DefaultConfig returned nil")
 	}
-	if cfg.Concurrency != 8 {
-		t.Errorf("ThreadCount = %d, want 8", cfg.Concurrency)
-	}
-	if cfg.MaxConcurrentTasks != 1 {
-		t.Errorf("MaxConcurrentTasks = %d, want 1", cfg.MaxConcurrentTasks)
+	if cfg.ThreadNum != 8 {
+		t.Errorf("ThreadNum = %d, want 8", cfg.ThreadNum)
 	}
 	if cfg.RetryCount != 3 {
 		t.Errorf("RetryCount = %d, want 3", cfg.RetryCount)
 	}
-	if cfg.OutputDir != "/downloads" {
-		t.Errorf("OutputDir = %q, want %q", cfg.OutputDir, "/downloads")
+	if cfg.SaveDir != "/downloads" {
+		t.Errorf("SaveDir = %q, want %q", cfg.SaveDir, "/downloads")
 	}
 	if cfg.Merge != "ts2mp4" {
 		t.Errorf("Merge = %q, want %q", cfg.Merge, "ts2mp4")
@@ -39,11 +36,11 @@ func TestLoadConfig(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.json")
 
 	data := `{
-		"concurrency": 16,
+		"thread-num": 16,
 		"max-speed": 1000000,
-		"output-dir": "/downloads",
+		"save-dir": "/downloads",
 		"merge": "ffmpeg",
-		"ffmpeg-path": "/usr/bin/ffmpeg",
+		"ffmpeg-dir": "/usr/bin/ffmpeg",
 		"del-after-done": true,
 		"mux-after-done": true,
 		"auto-subtitle-fix": true,
@@ -52,7 +49,6 @@ func TestLoadConfig(t *testing.T) {
 			"Referer": "https://example.com"
 		},
 		"proxy": "http://127.0.0.1:8080",
-		"max-concurrent-tasks": 4,
 		"retry-count": 5
 	}`
 	os.WriteFile(cfgPath, []byte(data), 0644)
@@ -62,20 +58,20 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if cfg.Concurrency != 16 {
-		t.Errorf("ThreadCount = %d, want 16", cfg.Concurrency)
+	if cfg.ThreadNum != 16 {
+		t.Errorf("ThreadNum = %d, want 16", cfg.ThreadNum)
 	}
 	if cfg.MaxSpeed != 1000000 {
 		t.Errorf("MaxSpeed = %d, want 1000000", cfg.MaxSpeed)
 	}
-	if cfg.OutputDir != "/downloads" {
-		t.Errorf("OutputDir = %q, want /downloads", cfg.OutputDir)
+	if cfg.SaveDir != "/downloads" {
+		t.Errorf("SaveDir = %q, want /downloads", cfg.SaveDir)
 	}
 	if cfg.Merge != "ffmpeg" {
 		t.Errorf("Merge = %q, want %q", cfg.Merge, "ffmpeg")
 	}
-	if cfg.FFmpegPath != "/usr/bin/ffmpeg" {
-		t.Errorf("FFmpegPath = %q, want /usr/bin/ffmpeg", cfg.FFmpegPath)
+	if cfg.FFmpegDir != "/usr/bin/ffmpeg" {
+		t.Errorf("FFmpegDir = %q, want /usr/bin/ffmpeg", cfg.FFmpegDir)
 	}
 	if !cfg.DelAfterDone {
 		t.Error("DelAfterDone should be true")
@@ -92,9 +88,6 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Proxy != "http://127.0.0.1:8080" {
 		t.Errorf("Proxy = %q", cfg.Proxy)
 	}
-	if cfg.MaxConcurrentTasks != 4 {
-		t.Errorf("MaxConcurrentTasks = %d, want 4", cfg.MaxConcurrentTasks)
-	}
 	if cfg.RetryCount != 5 {
 		t.Errorf("RetryCount = %d, want 5", cfg.RetryCount)
 	}
@@ -104,22 +97,19 @@ func TestLoadConfigPartial(t *testing.T) {
 	// Partial config should fill in defaults for missing fields
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "partial.json")
-	os.WriteFile(cfgPath, []byte(`{"concurrency": 4}`), 0644)
+	os.WriteFile(cfgPath, []byte(`{"thread-num": 4}`), 0644)
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if cfg.Concurrency != 4 {
-		t.Errorf("ThreadCount = %d, want 4", cfg.Concurrency)
+	if cfg.ThreadNum != 4 {
+		t.Errorf("ThreadNum = %d, want 4", cfg.ThreadNum)
 	}
 	// Defaults should fill in
 	if cfg.RetryCount != 3 {
 		t.Errorf("RetryCount = %d, want 3 (default)", cfg.RetryCount)
-	}
-	if cfg.MaxConcurrentTasks != 1 {
-		t.Errorf("MaxConcurrentTasks = %d, want 1 (default)", cfg.MaxConcurrentTasks)
 	}
 }
 
@@ -146,7 +136,7 @@ func TestSaveConfig(t *testing.T) {
 	cfgPath := filepath.Join(dir, "saved.json")
 
 	cfg := DefaultConfig()
-	cfg.Concurrency = 12
+	cfg.ThreadNum = 12
 	cfg.MaxSpeed = 500000
 	cfg.Headers = map[string]string{"X-Test": "value"}
 
@@ -166,8 +156,8 @@ func TestSaveConfig(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if loaded.Concurrency != 12 {
-		t.Errorf("ThreadCount = %d, want 12", loaded.Concurrency)
+	if loaded.ThreadNum != 12 {
+		t.Errorf("ThreadNum = %d, want 12", loaded.ThreadNum)
 	}
 	if loaded.MaxSpeed != 500000 {
 		t.Errorf("MaxSpeed = %d, want 500000", loaded.MaxSpeed)
@@ -262,33 +252,32 @@ func TestFindConfigNotFound(t *testing.T) {
 
 func TestApplyToRequest(t *testing.T) {
 	cfg := &Config{
-		Concurrency:        16,
-		MaxSpeed:           1000000,
-		OutputDir:          "/downloads",
-		Merge:              "ffmpeg",
-		FFmpegPath:         "/usr/bin/ffmpeg",
-		DelAfterDone:       true,
-		MuxAfterDone:       true,
-		AutoSubtitleFix:    true,
-		Headers:            map[string]string{"User-Agent": "test"},
-		RetryCount:         5,
-		MaxConcurrentTasks: 4,
+		ThreadNum:       16,
+		MaxSpeed:        1000000,
+		SaveDir:         "/downloads",
+		Merge:           "ffmpeg",
+		FFmpegDir:       "/usr/bin/ffmpeg",
+		DelAfterDone:    true,
+		MuxAfterDone:    true,
+		AutoSubtitleFix: true,
+		Headers:         map[string]string{"User-Agent": "test"},
+		RetryCount:      5,
 	}
 
 	req := &model.DownloadRequest{}
 	cfg.ApplyToRequest(req)
 
 	if req.ThreadCount != 16 {
-		t.Errorf("ThreadCount = %d, want 16", req.ThreadCount)
+		t.Errorf("ThreadNum = %d, want 16", req.ThreadCount)
 	}
 	if req.MaxSpeed != 1000000 {
 		t.Errorf("MaxSpeed = %d, want 1000000", req.MaxSpeed)
 	}
 	if req.OutputDir != "/downloads" {
-		t.Errorf("OutputDir = %q, want /downloads", req.OutputDir)
+		t.Errorf("SaveDir = %q, want /downloads", req.OutputDir)
 	}
 	if req.FFmpegPath != "/usr/bin/ffmpeg" {
-		t.Errorf("FFmpegPath = %q, want /usr/bin/ffmpeg", req.FFmpegPath)
+		t.Errorf("FFmpegDir = %q, want /usr/bin/ffmpeg", req.FFmpegPath)
 	}
 	if req.MergeMode != model.MergeModeFFmpeg {
 		t.Errorf("MergeMode = %d, want %d", req.MergeMode, model.MergeModeFFmpeg)
@@ -338,7 +327,7 @@ func TestApplyToRequestHeaderMerge(t *testing.T) {
 
 func TestApplyToRequestNilHeaders(t *testing.T) {
 	cfg := &Config{
-		Concurrency: 4,
+		ThreadNum: 4,
 		Headers:     map[string]string{"X-Custom": "val"},
 	}
 

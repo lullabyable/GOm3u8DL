@@ -12,12 +12,12 @@ import (
 // Config holds persistent configuration loaded from a JSON file.
 type Config struct {
 	// Default download settings
-	Concurrency     int    `json:"concurrency"`
+	ThreadNum       int    `json:"thread-num"`
 	MaxSpeed        int64  `json:"max-speed"`
-	OutputDir       string `json:"output-dir"`
+	SaveDir         string `json:"save-dir"`
 	TmpDir          string `json:"tmp-dir"`
 	Merge           string `json:"merge"`
-	FFmpegPath      string `json:"ffmpeg-path"`
+	FFmpegDir       string `json:"ffmpeg-dir"`
 	DelAfterDone    bool   `json:"del-after-done"`
 	MuxAfterDone    bool   `json:"mux-after-done"`
 	AutoSubtitleFix bool   `json:"auto-subtitle-fix"`
@@ -27,25 +27,23 @@ type Config struct {
 	Proxy   string            `json:"proxy"`
 
 	// Advanced
-	MaxConcurrentTasks int `json:"max-concurrent-tasks"`
-	RetryCount         int `json:"retry-count"`
+	RetryCount int `json:"retry-count"`
 }
 
 // DefaultConfig returns a Config with sensible default values.
 func DefaultConfig() *Config {
 	return &Config{
-		Concurrency:        8,
-		MaxSpeed:           0,
-		OutputDir:          "/downloads",
-		Merge:              "ts2mp4",
-		FFmpegPath:         "",
-		DelAfterDone:       false,
-		MuxAfterDone:       false,
-		AutoSubtitleFix:    false,
-		Headers:            make(map[string]string),
-		Proxy:              "",
-		MaxConcurrentTasks: 1,
-		RetryCount:         3,
+		ThreadNum:       8,
+		MaxSpeed:        0,
+		SaveDir:         "/downloads",
+		Merge:           "ts2mp4",
+		FFmpegDir:       "",
+		DelAfterDone:    false,
+		MuxAfterDone:    false,
+		AutoSubtitleFix: false,
+		Headers:         make(map[string]string),
+		Proxy:           "",
+		RetryCount:      3,
 	}
 }
 
@@ -116,17 +114,17 @@ func FindConfig() (string, bool) {
 // ApplyToRequest applies the config values to a DownloadRequest.
 // Non-zero/non-empty config values override existing request fields.
 func (c *Config) ApplyToRequest(req *model.DownloadRequest) {
-	if c.Concurrency > 0 {
-		req.ThreadCount = c.Concurrency
+	if c.ThreadNum > 0 {
+		req.ThreadCount = c.ThreadNum
 	}
 	if c.MaxSpeed > 0 {
 		req.MaxSpeed = c.MaxSpeed
 	}
-	if c.OutputDir != "" {
-		req.OutputDir = c.OutputDir
+	if c.SaveDir != "" {
+		req.OutputDir = c.SaveDir
 	}
-	if c.FFmpegPath != "" {
-		req.FFmpegPath = c.FFmpegPath
+	if c.FFmpegDir != "" {
+		req.FFmpegPath = c.FFmpegDir
 	}
 	if c.Merge != "" {
 		req.MergeMode = parseMergeModeStr(c.Merge)
@@ -175,17 +173,17 @@ func parseMergeModeStr(s string) model.MergeMode {
 // cliFlags is the set of flag names that were explicitly provided on the command line.
 // This ensures CLI always wins over config file.
 func (c *Config) ApplyToRequestWithCLI(req *model.DownloadRequest, cliFlags map[string]bool) {
-	if !cliFlags["concurrency"] && c.Concurrency > 0 {
-		req.ThreadCount = c.Concurrency
+	if !cliFlags["concurrency"] && c.ThreadNum > 0 {
+		req.ThreadCount = c.ThreadNum
 	}
 	if !cliFlags["max-speed"] && c.MaxSpeed > 0 {
 		req.MaxSpeed = c.MaxSpeed
 	}
-	if !cliFlags["o"] && c.OutputDir != "" {
-		req.OutputDir = c.OutputDir
+	if !cliFlags["o"] && c.SaveDir != "" {
+		req.OutputDir = c.SaveDir
 	}
-	if !cliFlags["ffmpeg-path"] && c.FFmpegPath != "" {
-		req.FFmpegPath = c.FFmpegPath
+	if !cliFlags["ffmpeg-path"] && c.FFmpegDir != "" {
+		req.FFmpegPath = c.FFmpegDir
 	}
 	if !cliFlags["merge"] && c.Merge != "" {
 		req.MergeMode = parseMergeModeStr(c.Merge)
@@ -219,31 +217,31 @@ func (c *Config) ApplyToRequestWithCLI(req *model.DownloadRequest, cliFlags map[
 // MergeConfig merges config into CLI options, CLI values always win.
 // Returns the merged values. This is a convenience for the CLI layer.
 type CLIOptions struct {
-	URL         string
-	OutputDir   string
-	TmpDir      string
-	SaveName    string
-	Concurrency int
-	MaxSpeed    int64
-	MergeMode   string
-	Headers     map[string]string
-	Keys        []string
-	AutoSub     bool
-	SubOnly     bool
-	SVSelect    string
+	URL       string
+	SaveDir   string
+	TmpDir    string
+	SaveName  string
+	ThreadNum int
+	MaxSpeed  int64
+	MergeMode string
+	Headers   map[string]string
+	Keys      []string
+	AutoSub   bool
+	SubOnly   bool
+	SVSelect  string
 }
 
 // MergeWithConfig applies config defaults for any zero-value CLI fields.
 // Non-zero CLI fields are never overwritten.
 func (o *CLIOptions) MergeWithConfig(cfg *Config) {
-	if o.Concurrency == 0 && cfg.Concurrency > 0 {
-		o.Concurrency = cfg.Concurrency
+	if o.ThreadNum == 0 && cfg.ThreadNum > 0 {
+		o.ThreadNum = cfg.ThreadNum
 	}
 	if o.MaxSpeed == 0 && cfg.MaxSpeed > 0 {
 		o.MaxSpeed = cfg.MaxSpeed
 	}
-	if o.OutputDir == "" && cfg.OutputDir != "" {
-		o.OutputDir = cfg.OutputDir
+	if o.SaveDir == "" && cfg.SaveDir != "" {
+		o.SaveDir = cfg.SaveDir
 	}
 	if o.TmpDir == "" && cfg.TmpDir != "" {
 		o.TmpDir = cfg.TmpDir

@@ -2,7 +2,6 @@ package m3u8dl
 
 // Options holds global engine configuration.
 type Options struct {
-	MaxConcurrentTasks int     // simultaneous video downloads
 	SegmentConcurrency int     // parallel segment downloads per task
 	GlobalMaxSpeed     int64   // bytes/sec, 0=unlimited
 	TempDir            string  // temp file directory
@@ -16,17 +15,12 @@ type Option func(*Options)
 // defaultOptions returns sensible defaults.
 func defaultOptions() Options {
 	return Options{
-		MaxConcurrentTasks: 1,
 		SegmentConcurrency: 8,
 		GlobalMaxSpeed:     0,
 		TempDir:            "",
 		FFProbePath:        "ffprobe",
 		LogLevel:           LogInfo,
 	}
-}
-
-func WithMaxConcurrentTasks(n int) Option {
-	return func(o *Options) { o.MaxConcurrentTasks = n }
 }
 
 func WithSegmentConcurrency(n int) Option {

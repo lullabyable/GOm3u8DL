@@ -266,12 +266,12 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
 
 ```json
 {
-  "concurrency": 16,
+  "thread-num": 16,
   "max-speed": 0,
-  "output-dir": "./downloads",
+  "save-dir": "./downloads",
   "tmp-dir": "",
   "merge": "ts2mp4",
-  "ffmpeg-path": "/usr/bin/ffmpeg",
+  "ffmpeg-dir": "/usr/bin/ffmpeg",
   "del-after-done": true,
   "mux-after-done": false,
   "auto-subtitle-fix": false,
@@ -280,7 +280,6 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
     "Referer": "https://example.com/"
   },
   "proxy": "http://127.0.0.1:7890",
-  "max-concurrent-tasks": 1,
   "retry-count": 3
 }
 ```
@@ -289,18 +288,17 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `concurrency` | int | `8` | 分段下载并发数 |
+| `thread-num` | int | `8` | 分段下载并发数 |
 | `max-speed` | int64 | `0` | 最大下载速度（bytes/sec），0=不限 |
-| `output-dir` | string | `.` | 默认输出目录 |
-| `tmp-dir` | string | `""` | 临时文件目录，为空时使用 output-dir |
+| `save-dir` | string | `.` | 默认输出目录 |
+| `tmp-dir` | string | `""` | 临时文件目录，为空时使用 save-dir |
 | `merge` | string | `"ts2mp4"` | 合并模式：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并，保留切片和临时目录） |
-| `ffmpeg-path` | string | `""` | ffmpeg 可执行文件路径 |
+| `ffmpeg-dir` | string | `""` | ffmpeg 可执行文件路径 |
 | `del-after-done` | bool | `false` | 下载完成后删除临时文件 |
 | `mux-after-done` | bool | `false` | 下载完成后重新封装 |
 | `auto-subtitle-fix` | bool | `false` | 自动修复字幕时间轴 |
 | `headers` | object | `{}` | 默认 HTTP Headers |
 | `proxy` | string | `""` | HTTP 代理地址 |
-| `max-concurrent-tasks` | int | `1` | 同时下载的任务数 |
 | `retry-count` | int | `3` | 分段下载失败重试次数 |
 
 ## 支持的协议
