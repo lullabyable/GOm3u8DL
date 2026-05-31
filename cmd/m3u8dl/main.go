@@ -83,7 +83,7 @@ func main() {
 	)
 
 	flag.StringVar(&url, "url", "", "M3U8/MPD/ISM URL (required)")
-	flag.StringVar(&outputDir, "o", "/downloads", "Output directory")
+	flag.StringVar(&outputDir, "save-dir", "/downloads", "Output directory")
 	flag.StringVar(&saveName, "save-name", "", "Output filename (without extension)")
 	flag.IntVar(&concurrency, "concurrency", 8, "Segment download concurrency")
 	flag.Int64Var(&maxSpeed, "max-speed", 0, "Max download speed in bytes/sec (0=unlimited)")
@@ -145,7 +145,7 @@ func main() {
 			if !cliFlags["max-speed"] && cfg.MaxSpeed > 0 {
 				maxSpeed = cfg.MaxSpeed
 			}
-			if !cliFlags["o"] && cfg.OutputDir != "" && cfg.OutputDir != "/downloads" {
+			if !cliFlags["save-dir"] && cfg.OutputDir != "" && cfg.OutputDir != "/downloads" {
 				outputDir = cfg.OutputDir
 			}
 			if !cliFlags["merge"] && cfg.MergeMode > 0 {
@@ -302,7 +302,7 @@ func interactiveMode() (url, outputDir, saveName string, concurrency int, maxSpe
 	// Show usage hint
 	fmt.Printf("  %sUsage:%s <URL> [flags]    %s(flags are optional, press Enter for defaults)%s\n\n", bold, reset, dim, reset)
 	fmt.Printf("  %sAvailable flags:%s\n", dim, reset)
-	fmt.Printf("    -o <dir>              Output directory     %s(default: /downloads)%s\n", grey, reset)
+	fmt.Printf("    -save-dir <dir>       Output directory     %s(default: /downloads)%s\n", grey, reset)
 	fmt.Printf("    -save-name <name>     Output filename      %s(default: auto)%s\n", grey, reset)
 	fmt.Printf("    -concurrency <n>      Thread count         %s(default: 8)%s\n", grey, reset)
 	fmt.Printf("    -max-speed <n>        Speed limit          %s(e.g. 2M, 500K, default: unlimited)%s\n", grey, reset)
@@ -357,7 +357,7 @@ func interactiveMode() (url, outputDir, saveName string, concurrency int, maxSpe
 
 		// Parse the remaining flags
 		fs := flag.NewFlagSet("interactive", flag.ContinueOnError)
-		fs.StringVar(&outputDir, "o", "/downloads", "")
+		fs.StringVar(&outputDir, "save-dir", "/downloads", "")
 		fs.StringVar(&saveName, "save-name", "", "")
 		fs.IntVar(&concurrency, "concurrency", 8, "")
 		fs.Int64Var(&maxSpeed, "max-speed", 0, "")

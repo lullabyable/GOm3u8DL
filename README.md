@@ -63,11 +63,11 @@ go install github.com/lullabyable/GOm3u8DL/cmd/m3u8dl@latest
 
 # 指定输出目录和文件名
 ./m3u8dl -url "https://example.com/video/index.m3u8" \
-  -o ./output \
+  -save-dir ./output \
   -save-name my_video
 
 # URL 也可以作为位置参数传入
-./m3u8dl "https://example.com/video/index.m3u8" -o ./output
+./m3u8dl "https://example.com/video/index.m3u8" -save-dir ./output
 ```
 
 ### 带加密的 HLS
@@ -170,7 +170,7 @@ go install github.com/lullabyable/GOm3u8DL/cmd/m3u8dl@latest
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `-o` | `/downloads` | 输出目录 |
+| `-save-dir` | `/downloads` | 输出目录 |
 | `-save-name` | 自动生成（日期+时间戳） | 输出文件名（不含扩展名） |
 
 ### 解密相关
@@ -433,7 +433,7 @@ result, err := engine.DownloadOnly(ctx, model.DownloadRequest{
 
 ```bash
 # URL 可以直接跟在命令后面
-./m3u8dl "https://example.com/video/index.m3u8" -o ./output
+./m3u8dl "https://example.com/video/index.m3u8" -save-dir ./output
 ```
 
 ## 项目结构
