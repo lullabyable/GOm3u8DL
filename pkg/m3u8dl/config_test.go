@@ -26,8 +26,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.OutputDir != "/downloads" {
 		t.Errorf("OutputDir = %q, want %q", cfg.OutputDir, "/downloads")
 	}
-	if cfg.MergeMode != int(model.MergeModeTS2MP4) {
-		t.Errorf("MergeMode = %d, want %d", cfg.MergeMode, model.MergeModeTS2MP4)
+	if cfg.Merge != "ts2mp4" {
+		t.Errorf("Merge = %q, want %q", cfg.Merge, "ts2mp4")
 	}
 	if cfg.Headers == nil {
 		t.Error("Headers should not be nil")
@@ -42,7 +42,7 @@ func TestLoadConfig(t *testing.T) {
 		"thread_count": 16,
 		"max_speed": 1000000,
 		"output_dir": "/downloads",
-		"merge_mode": 3,
+		"merge": "ffmpeg",
 		"ffmpeg_path": "/usr/bin/ffmpeg",
 		"del_after_done": true,
 		"mux_after_done": true,
@@ -71,8 +71,8 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.OutputDir != "/downloads" {
 		t.Errorf("OutputDir = %q, want /downloads", cfg.OutputDir)
 	}
-	if cfg.MergeMode != 3 {
-		t.Errorf("MergeMode = %d, want 3", cfg.MergeMode)
+	if cfg.Merge != "ffmpeg" {
+		t.Errorf("Merge = %q, want %q", cfg.Merge, "ffmpeg")
 	}
 	if cfg.FFmpegPath != "/usr/bin/ffmpeg" {
 		t.Errorf("FFmpegPath = %q, want /usr/bin/ffmpeg", cfg.FFmpegPath)
@@ -265,7 +265,7 @@ func TestApplyToRequest(t *testing.T) {
 		ThreadCount:        16,
 		MaxSpeed:           1000000,
 		OutputDir:          "/downloads",
-		MergeMode:          int(model.MergeModeFFmpeg),
+		Merge:              "ffmpeg",
 		FFmpegPath:         "/usr/bin/ffmpeg",
 		DelAfterDone:       true,
 		MuxAfterDone:       true,

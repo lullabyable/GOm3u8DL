@@ -150,19 +150,8 @@ func main() {
 			if !cliFlags["save-dir"] && cfg.OutputDir != "" && cfg.OutputDir != "/downloads" {
 				outputDir = cfg.OutputDir
 			}
-			if !cliFlags["merge"] && cfg.MergeMode > 0 {
-				switch cfg.MergeMode {
-				case 0:
-					mergeMode = "binary"
-				case 1:
-					mergeMode = "ts2mp4"
-				case 2:
-					mergeMode = "fmp4"
-				case 3:
-					mergeMode = "ffmpeg"
-				case 4:
-					mergeMode = "no"
-				}
+			if !cliFlags["merge"] && cfg.Merge != "" {
+				mergeMode = cfg.Merge
 			}
 			if !cliFlags["auto-subtitle-fix"] && cfg.AutoSubtitleFix {
 				autoSub = true

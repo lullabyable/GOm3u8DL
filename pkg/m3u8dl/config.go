@@ -12,11 +12,11 @@ import (
 // Config holds persistent configuration loaded from a JSON file.
 type Config struct {
 	// Default download settings
-	ThreadCount     int   `json:"thread_count"`
-	MaxSpeed        int64 `json:"max_speed"`
+	ThreadCount     int    `json:"thread_count"`
+	MaxSpeed        int64  `json:"max_speed"`
 	OutputDir       string `json:"output_dir"`
 	TmpDir          string `json:"tmp_dir"`
-	MergeMode       int    `json:"merge_mode"`
+	Merge           string `json:"merge"`
 	FFmpegPath      string `json:"ffmpeg_path"`
 	DelAfterDone    bool   `json:"del_after_done"`
 	MuxAfterDone    bool   `json:"mux_after_done"`
@@ -37,7 +37,7 @@ func DefaultConfig() *Config {
 		ThreadCount:        8,
 		MaxSpeed:           0,
 		OutputDir:          "/downloads",
-		MergeMode:          int(model.MergeModeTS2MP4),
+		Merge:              "ts2mp4",
 		FFmpegPath:         "",
 		DelAfterDone:       false,
 		MuxAfterDone:       false,
@@ -128,7 +128,9 @@ func (c *Config) ApplyToRequest(req *model.DownloadRequest) {
 	if c.FFmpegPath != "" {
 		req.FFmpegPath = c.FFmpegPath
 	}
-	req.MergeMode = model.MergeMode(c.MergeMode)
+	if c.Merge != "" {
+		req.MergeMode = parseMergeModeStr(c.Merge)
+	}
 	req.DelAfterDone = c.DelAfterDone
 	req.MuxAfterDone = c.MuxAfterDone
 	req.AutoSubtitleFix = c.AutoSubtitleFix
@@ -150,6 +152,24 @@ func (c *Config) ApplyToRequest(req *model.DownloadRequest) {
 	}
 }
 
+// parseMergeModeStr converts a merge mode string to the enum value.
+func parseMergeModeStr(s string) model.MergeMode {
+	switch s {
+	case "binary":
+		return model.MergeModeBinary
+	case "ts2mp4":
+		return model.MergeModeTS2MP4
+	case "fmp4":
+		return model.MergeModeFMP4
+	case "ffmpeg":
+		return model.MergeModeFFmpeg
+	case "no":
+		return model.MergeModeNo
+	default:
+		return model.MergeModeTS2MP4
+	}
+}
+
 // ApplyToRequestWithCLI applies config values to a DownloadRequest, but ONLY
 // for fields that were NOT explicitly set via CLI flags.
 // cliFlags is the set of flag names that were explicitly provided on the command line.
@@ -167,8 +187,8 @@ func (c *Config) ApplyToRequestWithCLI(req *model.DownloadRequest, cliFlags map[
 	if !cliFlags["ffmpeg-path"] && c.FFmpegPath != "" {
 		req.FFmpegPath = c.FFmpegPath
 	}
-	if !cliFlags["merge"] {
-		req.MergeMode = model.MergeMode(c.MergeMode)
+	if !cliFlags["merge"] && c.Merge != "" {
+		req.MergeMode = parseMergeModeStr(c.Merge)
 	}
 	if !cliFlags["del-after-done"] {
 		req.DelAfterDone = c.DelAfterDone
@@ -228,19 +248,8 @@ func (o *CLIOptions) MergeWithConfig(cfg *Config) {
 	if o.TmpDir == "" && cfg.TmpDir != "" {
 		o.TmpDir = cfg.TmpDir
 	}
-	if o.MergeMode == "" && cfg.MergeMode > 0 {
-		switch cfg.MergeMode {
-		case 0:
-			o.MergeMode = "binary"
-		case 1:
-			o.MergeMode = "ts2mp4"
-		case 2:
-			o.MergeMode = "fmp4"
-		case 3:
-			o.MergeMode = "ffmpeg"
-		case 4:
-			o.MergeMode = "no"
-		}
+	if o.MergeMode == "" && cfg.Merge != "" {
+		o.MergeMode = cfg.Merge
 	}
 	if !o.AutoSub && cfg.AutoSubtitleFix {
 		o.AutoSub = true

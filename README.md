@@ -270,7 +270,7 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
   "max_speed": 0,
   "output_dir": "./downloads",
   "tmp_dir": "",
-  "merge_mode": 0,
+  "merge": "ts2mp4",
   "ffmpeg_path": "/usr/bin/ffmpeg",
   "del_after_done": true,
   "mux_after_done": false,
@@ -293,7 +293,7 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
 | `max_speed` | int64 | `0` | 最大下载速度（bytes/sec），0=不限 |
 | `output_dir` | string | `.` | 默认输出目录 |
 | `tmp_dir` | string | `""` | 临时文件目录，为空时使用 output_dir |
-| `merge_mode` | int | `0` | 合并模式：0=binary, 1=ts2mp4, 2=fmp4, 3=ffmpeg, 4=no（仅下载不合并，保留切片和临时目录） |
+| `merge` | string | `"ts2mp4"` | 合并模式：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并，保留切片和临时目录） |
 | `ffmpeg_path` | string | `""` | ffmpeg 可执行文件路径 |
 | `del_after_done` | bool | `false` | 下载完成后删除临时文件 |
 | `mux_after_done` | bool | `false` | 下载完成后重新封装 |
