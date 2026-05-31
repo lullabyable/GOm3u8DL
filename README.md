@@ -266,22 +266,22 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
 
 ```json
 {
-  "thread_count": 16,
-  "max_speed": 0,
-  "output_dir": "./downloads",
-  "tmp_dir": "",
+  "concurrency": 16,
+  "max-speed": 0,
+  "output-dir": "./downloads",
+  "tmp-dir": "",
   "merge": "ts2mp4",
-  "ffmpeg_path": "/usr/bin/ffmpeg",
-  "del_after_done": true,
-  "mux_after_done": false,
-  "auto_subtitle_fix": false,
+  "ffmpeg-path": "/usr/bin/ffmpeg",
+  "del-after-done": true,
+  "mux-after-done": false,
+  "auto-subtitle-fix": false,
   "headers": {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Referer": "https://example.com/"
   },
   "proxy": "http://127.0.0.1:7890",
-  "max_concurrent_tasks": 1,
-  "retry_count": 3
+  "max-concurrent-tasks": 1,
+  "retry-count": 3
 }
 ```
 
@@ -289,19 +289,19 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `thread_count` | int | `8` | 分段下载并发数 |
-| `max_speed` | int64 | `0` | 最大下载速度（bytes/sec），0=不限 |
-| `output_dir` | string | `.` | 默认输出目录 |
-| `tmp_dir` | string | `""` | 临时文件目录，为空时使用 output_dir |
+| `concurrency` | int | `8` | 分段下载并发数 |
+| `max-speed` | int64 | `0` | 最大下载速度（bytes/sec），0=不限 |
+| `output-dir` | string | `.` | 默认输出目录 |
+| `tmp-dir` | string | `""` | 临时文件目录，为空时使用 output-dir |
 | `merge` | string | `"ts2mp4"` | 合并模式：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并，保留切片和临时目录） |
-| `ffmpeg_path` | string | `""` | ffmpeg 可执行文件路径 |
-| `del_after_done` | bool | `false` | 下载完成后删除临时文件 |
-| `mux_after_done` | bool | `false` | 下载完成后重新封装 |
-| `auto_subtitle_fix` | bool | `false` | 自动修复字幕时间轴 |
+| `ffmpeg-path` | string | `""` | ffmpeg 可执行文件路径 |
+| `del-after-done` | bool | `false` | 下载完成后删除临时文件 |
+| `mux-after-done` | bool | `false` | 下载完成后重新封装 |
+| `auto-subtitle-fix` | bool | `false` | 自动修复字幕时间轴 |
 | `headers` | object | `{}` | 默认 HTTP Headers |
 | `proxy` | string | `""` | HTTP 代理地址 |
-| `max_concurrent_tasks` | int | `1` | 同时下载的任务数 |
-| `retry_count` | int | `3` | 分段下载失败重试次数 |
+| `max-concurrent-tasks` | int | `1` | 同时下载的任务数 |
+| `retry-count` | int | `3` | 分段下载失败重试次数 |
 
 ## 支持的协议
 

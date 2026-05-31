@@ -141,8 +141,8 @@ func main() {
 		} else {
 			fmt.Printf("%s[info]%s Config loaded: %s\n", cyan, reset, cfgPath)
 			// Apply config defaults — only for flags NOT explicitly set via CLI
-			if !cliFlags["concurrency"] && cfg.ThreadCount > 0 {
-				concurrency = cfg.ThreadCount
+			if !cliFlags["concurrency"] && cfg.Concurrency > 0 {
+				concurrency = cfg.Concurrency
 			}
 			if !cliFlags["max-speed"] && cfg.MaxSpeed > 0 {
 				maxSpeed = cfg.MaxSpeed

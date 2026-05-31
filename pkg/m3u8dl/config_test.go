@@ -14,8 +14,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("DefaultConfig returned nil")
 	}
-	if cfg.ThreadCount != 8 {
-		t.Errorf("ThreadCount = %d, want 8", cfg.ThreadCount)
+	if cfg.Concurrency != 8 {
+		t.Errorf("ThreadCount = %d, want 8", cfg.Concurrency)
 	}
 	if cfg.MaxConcurrentTasks != 1 {
 		t.Errorf("MaxConcurrentTasks = %d, want 1", cfg.MaxConcurrentTasks)
@@ -39,21 +39,21 @@ func TestLoadConfig(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.json")
 
 	data := `{
-		"thread_count": 16,
-		"max_speed": 1000000,
-		"output_dir": "/downloads",
+		"concurrency": 16,
+		"max-speed": 1000000,
+		"output-dir": "/downloads",
 		"merge": "ffmpeg",
-		"ffmpeg_path": "/usr/bin/ffmpeg",
-		"del_after_done": true,
-		"mux_after_done": true,
-		"auto_subtitle_fix": true,
+		"ffmpeg-path": "/usr/bin/ffmpeg",
+		"del-after-done": true,
+		"mux-after-done": true,
+		"auto-subtitle-fix": true,
 		"headers": {
 			"User-Agent": "test-agent",
 			"Referer": "https://example.com"
 		},
 		"proxy": "http://127.0.0.1:8080",
-		"max_concurrent_tasks": 4,
-		"retry_count": 5
+		"max-concurrent-tasks": 4,
+		"retry-count": 5
 	}`
 	os.WriteFile(cfgPath, []byte(data), 0644)
 
@@ -62,8 +62,8 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if cfg.ThreadCount != 16 {
-		t.Errorf("ThreadCount = %d, want 16", cfg.ThreadCount)
+	if cfg.Concurrency != 16 {
+		t.Errorf("ThreadCount = %d, want 16", cfg.Concurrency)
 	}
 	if cfg.MaxSpeed != 1000000 {
 		t.Errorf("MaxSpeed = %d, want 1000000", cfg.MaxSpeed)
@@ -104,15 +104,15 @@ func TestLoadConfigPartial(t *testing.T) {
 	// Partial config should fill in defaults for missing fields
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "partial.json")
-	os.WriteFile(cfgPath, []byte(`{"thread_count": 4}`), 0644)
+	os.WriteFile(cfgPath, []byte(`{"concurrency": 4}`), 0644)
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if cfg.ThreadCount != 4 {
-		t.Errorf("ThreadCount = %d, want 4", cfg.ThreadCount)
+	if cfg.Concurrency != 4 {
+		t.Errorf("ThreadCount = %d, want 4", cfg.Concurrency)
 	}
 	// Defaults should fill in
 	if cfg.RetryCount != 3 {
@@ -146,7 +146,7 @@ func TestSaveConfig(t *testing.T) {
 	cfgPath := filepath.Join(dir, "saved.json")
 
 	cfg := DefaultConfig()
-	cfg.ThreadCount = 12
+	cfg.Concurrency = 12
 	cfg.MaxSpeed = 500000
 	cfg.Headers = map[string]string{"X-Test": "value"}
 
@@ -166,8 +166,8 @@ func TestSaveConfig(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if loaded.ThreadCount != 12 {
-		t.Errorf("ThreadCount = %d, want 12", loaded.ThreadCount)
+	if loaded.Concurrency != 12 {
+		t.Errorf("ThreadCount = %d, want 12", loaded.Concurrency)
 	}
 	if loaded.MaxSpeed != 500000 {
 		t.Errorf("MaxSpeed = %d, want 500000", loaded.MaxSpeed)
@@ -262,7 +262,7 @@ func TestFindConfigNotFound(t *testing.T) {
 
 func TestApplyToRequest(t *testing.T) {
 	cfg := &Config{
-		ThreadCount:        16,
+		Concurrency:        16,
 		MaxSpeed:           1000000,
 		OutputDir:          "/downloads",
 		Merge:              "ffmpeg",
@@ -338,7 +338,7 @@ func TestApplyToRequestHeaderMerge(t *testing.T) {
 
 func TestApplyToRequestNilHeaders(t *testing.T) {
 	cfg := &Config{
-		ThreadCount: 4,
+		Concurrency: 4,
 		Headers:     map[string]string{"X-Custom": "val"},
 	}
 

@@ -12,29 +12,29 @@ import (
 // Config holds persistent configuration loaded from a JSON file.
 type Config struct {
 	// Default download settings
-	ThreadCount     int    `json:"thread_count"`
-	MaxSpeed        int64  `json:"max_speed"`
-	OutputDir       string `json:"output_dir"`
-	TmpDir          string `json:"tmp_dir"`
+	Concurrency     int    `json:"concurrency"`
+	MaxSpeed        int64  `json:"max-speed"`
+	OutputDir       string `json:"output-dir"`
+	TmpDir          string `json:"tmp-dir"`
 	Merge           string `json:"merge"`
-	FFmpegPath      string `json:"ffmpeg_path"`
-	DelAfterDone    bool   `json:"del_after_done"`
-	MuxAfterDone    bool   `json:"mux_after_done"`
-	AutoSubtitleFix bool   `json:"auto_subtitle_fix"`
+	FFmpegPath      string `json:"ffmpeg-path"`
+	DelAfterDone    bool   `json:"del-after-done"`
+	MuxAfterDone    bool   `json:"mux-after-done"`
+	AutoSubtitleFix bool   `json:"auto-subtitle-fix"`
 
 	// HTTP settings
 	Headers map[string]string `json:"headers"`
 	Proxy   string            `json:"proxy"`
 
 	// Advanced
-	MaxConcurrentTasks int `json:"max_concurrent_tasks"`
-	RetryCount         int `json:"retry_count"`
+	MaxConcurrentTasks int `json:"max-concurrent-tasks"`
+	RetryCount         int `json:"retry-count"`
 }
 
 // DefaultConfig returns a Config with sensible default values.
 func DefaultConfig() *Config {
 	return &Config{
-		ThreadCount:        8,
+		Concurrency:        8,
 		MaxSpeed:           0,
 		OutputDir:          "/downloads",
 		Merge:              "ts2mp4",
@@ -116,8 +116,8 @@ func FindConfig() (string, bool) {
 // ApplyToRequest applies the config values to a DownloadRequest.
 // Non-zero/non-empty config values override existing request fields.
 func (c *Config) ApplyToRequest(req *model.DownloadRequest) {
-	if c.ThreadCount > 0 {
-		req.ThreadCount = c.ThreadCount
+	if c.Concurrency > 0 {
+		req.ThreadCount = c.Concurrency
 	}
 	if c.MaxSpeed > 0 {
 		req.MaxSpeed = c.MaxSpeed
@@ -175,8 +175,8 @@ func parseMergeModeStr(s string) model.MergeMode {
 // cliFlags is the set of flag names that were explicitly provided on the command line.
 // This ensures CLI always wins over config file.
 func (c *Config) ApplyToRequestWithCLI(req *model.DownloadRequest, cliFlags map[string]bool) {
-	if !cliFlags["concurrency"] && c.ThreadCount > 0 {
-		req.ThreadCount = c.ThreadCount
+	if !cliFlags["concurrency"] && c.Concurrency > 0 {
+		req.ThreadCount = c.Concurrency
 	}
 	if !cliFlags["max-speed"] && c.MaxSpeed > 0 {
 		req.MaxSpeed = c.MaxSpeed
@@ -236,8 +236,8 @@ type CLIOptions struct {
 // MergeWithConfig applies config defaults for any zero-value CLI fields.
 // Non-zero CLI fields are never overwritten.
 func (o *CLIOptions) MergeWithConfig(cfg *Config) {
-	if o.Concurrency == 0 && cfg.ThreadCount > 0 {
-		o.Concurrency = cfg.ThreadCount
+	if o.Concurrency == 0 && cfg.Concurrency > 0 {
+		o.Concurrency = cfg.Concurrency
 	}
 	if o.MaxSpeed == 0 && cfg.MaxSpeed > 0 {
 		o.MaxSpeed = cfg.MaxSpeed
