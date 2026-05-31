@@ -22,12 +22,36 @@
 
 ### 从源码编译
 
+> 确保已安装 Go 1.21+
+
 ```bash
-# 确保已安装 Go 1.21+
 git clone git@github.com:lullabyable/GOm3u8DL.git
 cd GOm3u8DL
+```
+
+**Linux / macOS：**
+
+```bash
 go build -o m3u8dl ./cmd/m3u8dl/
 ```
+
+生成的 `m3u8dl` 即可直接运行。
+
+**Windows（生成 exe）：**
+
+在 Linux / macOS 上交叉编译：
+
+```bash
+GOOS=windows GOARCH=amd64 go build -o m3u8dl.exe ./cmd/m3u8dl/
+```
+
+在 Windows 上直接编译（需已安装 Go）：
+
+```cmd
+go build -o m3u8dl.exe .\cmd\m3u8dl\
+```
+
+生成的 `m3u8dl.exe` 可直接双击运行（交互模式）或在 CMD / PowerShell 中使用。
 
 ### 使用 go install
 
