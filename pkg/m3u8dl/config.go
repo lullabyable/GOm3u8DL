@@ -15,6 +15,7 @@ type Config struct {
 	ThreadCount     int   `json:"thread_count"`
 	MaxSpeed        int64 `json:"max_speed"`
 	OutputDir       string `json:"output_dir"`
+	TmpDir          string `json:"tmp_dir"`
 	MergeMode       int    `json:"merge_mode"`
 	FFmpegPath      string `json:"ffmpeg_path"`
 	DelAfterDone    bool   `json:"del_after_done"`
@@ -200,6 +201,7 @@ func (c *Config) ApplyToRequestWithCLI(req *model.DownloadRequest, cliFlags map[
 type CLIOptions struct {
 	URL         string
 	OutputDir   string
+	TmpDir      string
 	SaveName    string
 	Concurrency int
 	MaxSpeed    int64
@@ -222,6 +224,9 @@ func (o *CLIOptions) MergeWithConfig(cfg *Config) {
 	}
 	if o.OutputDir == "" && cfg.OutputDir != "" {
 		o.OutputDir = cfg.OutputDir
+	}
+	if o.TmpDir == "" && cfg.TmpDir != "" {
+		o.TmpDir = cfg.TmpDir
 	}
 	if o.MergeMode == "" && cfg.MergeMode > 0 {
 		switch cfg.MergeMode {

@@ -32,6 +32,7 @@ type DownloadRequest struct {
 	// Output config.
 	OutputDir string
 	SaveName  string
+	TmpDir    string // temp directory for downloads, defaults to OutputDir
 
 	// HTTP config.
 	Headers map[string]string

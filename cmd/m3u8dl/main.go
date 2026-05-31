@@ -70,6 +70,7 @@ func main() {
 	var (
 		url         string
 		outputDir   string
+		tmpDir      string
 		saveName    string
 		concurrency int
 		maxSpeed    int64
@@ -84,6 +85,7 @@ func main() {
 
 	flag.StringVar(&url, "url", "", "M3U8/MPD/ISM URL (required)")
 	flag.StringVar(&outputDir, "save-dir", "/downloads", "Output directory")
+	flag.StringVar(&tmpDir, "tmp-dir", "", "Temp directory for downloads (default: {save-dir}/)")
 	flag.StringVar(&saveName, "save-name", "", "Output filename (without extension)")
 	flag.IntVar(&concurrency, "concurrency", 8, "Segment download concurrency")
 	flag.Int64Var(&maxSpeed, "max-speed", 0, "Max download speed in bytes/sec (0=unlimited)")
@@ -114,7 +116,7 @@ func main() {
 
 	// ── Interactive mode (one-shot) ─────────────────────────────────
 	if url == "" && !hasStdinPiped() {
-		url, outputDir, saveName, concurrency, maxSpeed, mergeMode, headers, keys, autoSub, subOnly, svSelect = interactiveMode()
+		url, outputDir, tmpDir, saveName, concurrency, maxSpeed, mergeMode, headers, keys, autoSub, subOnly, svSelect = interactiveMode()
 		if url == "" {
 			fmt.Fprintf(os.Stderr, "%sError: URL is required%s\n", red, reset)
 			os.Exit(1)
@@ -162,6 +164,9 @@ func main() {
 			}
 			if !cliFlags["auto-subtitle-fix"] && cfg.AutoSubtitleFix {
 				autoSub = true
+			}
+			if !cliFlags["tmp-dir"] && cfg.TmpDir != "" {
+				tmpDir = cfg.TmpDir
 			}
 			// Merge headers: config provides base, CLI overrides same keys.
 			// Always merge (not gated on len(cfg.Headers)) so CLI headers
@@ -256,7 +261,7 @@ func main() {
 
 	if hasSeparateAV {
 		downloadSeparateStreams(ctx, engine, url, videoStreams, audioStreams,
-			svSelect, outputDir, saveName, headerMap, concurrency, maxSpeed, mode, autoSub, subOnly)
+			svSelect, outputDir, tmpDir, saveName, headerMap, concurrency, maxSpeed, mode, autoSub, subOnly)
 	} else {
 		var selected *model.StreamInfo
 		if svSelect != "" {
@@ -272,7 +277,7 @@ func main() {
 		}
 
 		fmt.Printf("\n%s[info]%s Selected: %s\n", cyan, reset, streamToShortString(*selected))
-		downloadSingleStream(ctx, engine, url, selected, outputDir, saveName,
+		downloadSingleStream(ctx, engine, url, selected, outputDir, tmpDir, saveName,
 			headerMap, concurrency, maxSpeed, mode, autoSub, subOnly)
 	}
 }
@@ -289,7 +294,7 @@ func hasStdinPiped() bool {
 
 // interactiveMode provides a one-shot input experience.
 // The user enters everything in a single line, or presses Enter for a guided one-line prompt.
-func interactiveMode() (url, outputDir, saveName string, concurrency int, maxSpeed int64,
+func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int, maxSpeed int64,
 	mergeMode string, headers stringSlice, keys stringSlice, autoSub, subOnly bool, svSelect string) {
 
 	reader := bufio.NewReader(os.Stdin)
@@ -303,6 +308,7 @@ func interactiveMode() (url, outputDir, saveName string, concurrency int, maxSpe
 	fmt.Printf("  %sUsage:%s <URL> [flags]    %s(flags are optional, press Enter for defaults)%s\n\n", bold, reset, dim, reset)
 	fmt.Printf("  %sAvailable flags:%s\n", dim, reset)
 	fmt.Printf("    -save-dir <dir>       Output directory     %s(default: /downloads)%s\n", grey, reset)
+	fmt.Printf("    -tmp-dir <dir>        Temp directory       %s(default: {save-dir}/)%s\n", grey, reset)
 	fmt.Printf("    -save-name <name>     Output filename      %s(default: auto)%s\n", grey, reset)
 	fmt.Printf("    -concurrency <n>      Thread count         %s(default: 8)%s\n", grey, reset)
 	fmt.Printf("    -max-speed <n>        Speed limit          %s(e.g. 2M, 500K, default: unlimited)%s\n", grey, reset)
@@ -358,6 +364,7 @@ func interactiveMode() (url, outputDir, saveName string, concurrency int, maxSpe
 		// Parse the remaining flags
 		fs := flag.NewFlagSet("interactive", flag.ContinueOnError)
 		fs.StringVar(&outputDir, "save-dir", "/downloads", "")
+		fs.StringVar(&tmpDir, "tmp-dir", "", "")
 		fs.StringVar(&saveName, "save-name", "", "")
 		fs.IntVar(&concurrency, "concurrency", 8, "")
 		fs.Int64Var(&maxSpeed, "max-speed", 0, "")
@@ -735,7 +742,7 @@ func formatDuration(seconds float64) string {
 // ── Download Functions ────────────────────────────────────────────────
 
 func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url string,
-	videoStreams, audioStreams []model.StreamInfo, svSelect, outputDir, saveName string,
+	videoStreams, audioStreams []model.StreamInfo, svSelect, outputDir, tmpDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
 	autoSub, subOnly bool) {
 
@@ -799,6 +806,7 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		Stream:             selectedVideo,
 		URL:                url,
 		OutputDir:          outputDir,
+		TmpDir:             tmpDir,
 		SaveName:           saveName + "_video",
 		Headers:            headerMap,
 		ThreadCount:        concurrency,
@@ -833,6 +841,7 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		Stream:             selectedAudio,
 		URL:                url,
 		OutputDir:          outputDir,
+		TmpDir:             tmpDir,
 		SaveName:           saveName + "_audio",
 		Headers:            headerMap,
 		ThreadCount:        concurrency,
@@ -893,7 +902,7 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 }
 
 func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string,
-	selected *model.StreamInfo, outputDir, saveName string,
+	selected *model.StreamInfo, outputDir, tmpDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
 	autoSub, subOnly bool) {
 
@@ -907,6 +916,7 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 		Stream:             selected,
 		URL:                url,
 		OutputDir:          outputDir,
+		TmpDir:             tmpDir,
 		SaveName:           saveName,
 		Headers:            headerMap,
 		ThreadCount:        concurrency,

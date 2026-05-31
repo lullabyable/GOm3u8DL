@@ -172,6 +172,7 @@ go install github.com/lullabyable/GOm3u8DL/cmd/m3u8dl@latest
 |------|--------|------|
 | `-save-dir` | `/downloads` | 输出目录 |
 | `-save-name` | 自动生成（日期+时间戳） | 输出文件名（不含扩展名） |
+| `-tmp-dir` | `{save-dir}/` | 临时文件下载目录，下载完成后自动清理 |
 
 ### 解密相关
 
@@ -240,6 +241,7 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
   "thread_count": 16,
   "max_speed": 0,
   "output_dir": "./downloads",
+  "tmp_dir": "",
   "merge_mode": 0,
   "ffmpeg_path": "/usr/bin/ffmpeg",
   "del_after_done": true,
@@ -262,6 +264,7 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
 | `thread_count` | int | `8` | 分段下载并发数 |
 | `max_speed` | int64 | `0` | 最大下载速度（bytes/sec），0=不限 |
 | `output_dir` | string | `.` | 默认输出目录 |
+| `tmp_dir` | string | `""` | 临时文件目录，为空时使用 output_dir |
 | `merge_mode` | int | `0` | 合并模式：0=binary, 1=ts2mp4, 2=fmp4, 3=ffmpeg |
 | `ffmpeg_path` | string | `""` | ffmpeg 可执行文件路径 |
 | `del_after_done` | bool | `false` | 下载完成后删除临时文件 |
