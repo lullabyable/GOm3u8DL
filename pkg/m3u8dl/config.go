@@ -238,6 +238,8 @@ func (o *CLIOptions) MergeWithConfig(cfg *Config) {
 			o.MergeMode = "fmp4"
 		case 3:
 			o.MergeMode = "ffmpeg"
+		case 4:
+			o.MergeMode = "no"
 		}
 	}
 	if !o.AutoSub && cfg.AutoSubtitleFix {

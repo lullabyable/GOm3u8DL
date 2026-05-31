@@ -269,7 +269,7 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	if req.DelAfterDone {
+	if req.DelAfterDone && req.MergeMode != model.MergeModeNo {
 		defer func() { _ = downloader.CleanupTemp(tempDir) }()
 	}
 
@@ -313,53 +313,58 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 		return fmt.Errorf("download segments: %w", err)
 	}
 
-	// 4. Merge segments
-	emitStatus(model.TaskStatusMerging)
-	emitLog(LogInfo, fmt.Sprintf("Merging %d segments (%s)...", len(segmentPaths), mergeModeStr(req.MergeMode)))
-
+	// 4. Merge segments (skip if MergeModeNo)
 	outputPath := buildOutputPath(req)
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
-	}
 
-	switch req.MergeMode {
-	case model.MergeModeBinary:
-		// Prepend init segment if present
-		if stream.Playlist.MediaInit != nil {
-			initPath := downloader.SegmentPath(tempDir, -1)
-			if _, statErr := os.Stat(initPath); statErr == nil {
-				err = merge.BinaryMergeWithInit(initPath, segmentPaths, outputPath)
+	if req.MergeMode == model.MergeModeNo {
+		emitLog(LogInfo, fmt.Sprintf("Download only mode — %d segments saved to: %s", len(segmentPaths), tempDir))
+	} else {
+		emitStatus(model.TaskStatusMerging)
+		emitLog(LogInfo, fmt.Sprintf("Merging %d segments (%s)...", len(segmentPaths), mergeModeStr(req.MergeMode)))
+
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+			return fmt.Errorf("create output dir: %w", err)
+		}
+
+		switch req.MergeMode {
+		case model.MergeModeBinary:
+			// Prepend init segment if present
+			if stream.Playlist.MediaInit != nil {
+				initPath := downloader.SegmentPath(tempDir, -1)
+				if _, statErr := os.Stat(initPath); statErr == nil {
+					err = merge.BinaryMergeWithInit(initPath, segmentPaths, outputPath)
+				} else {
+					err = merge.BinaryMerge(segmentPaths, outputPath)
+				}
 			} else {
 				err = merge.BinaryMerge(segmentPaths, outputPath)
 			}
-		} else {
+		case model.MergeModeTS2MP4:
+			emitLog(LogInfo, "Using TS→MP4 remux (pure Go)")
+			err = merge.TS2MP4Remux(segmentPaths, outputPath)
+		case model.MergeModeFMP4:
+			emitLog(LogInfo, "Using fragmented MP4 merge (pure Go)")
+			// FMP4Merge needs init segment path as first arg
+			initPath := ""
+			if stream.Playlist.MediaInit != nil {
+				initPath = filepath.Join(tempDir, "seg_-1.ts")
+			}
+			err = merge.FMP4Merge(initPath, segmentPaths, outputPath)
+		case model.MergeModeFFmpeg:
+			ffmpegPath := req.FFmpegPath
+			if ffmpegPath == "" {
+				ffmpegPath = "ffmpeg"
+			}
+			emitLog(LogInfo, fmt.Sprintf("Using ffmpeg merge (%s)", ffmpegPath))
+			err = merge.FFmpegMerge(segmentPaths, outputPath, ffmpegPath)
+		default:
 			err = merge.BinaryMerge(segmentPaths, outputPath)
 		}
-	case model.MergeModeTS2MP4:
-		emitLog(LogInfo, "Using TS→MP4 remux (pure Go)")
-		err = merge.TS2MP4Remux(segmentPaths, outputPath)
-	case model.MergeModeFMP4:
-		emitLog(LogInfo, "Using fragmented MP4 merge (pure Go)")
-		// FMP4Merge needs init segment path as first arg
-		initPath := ""
-		if stream.Playlist.MediaInit != nil {
-			initPath = filepath.Join(tempDir, "seg_-1.ts")
-		}
-		err = merge.FMP4Merge(initPath, segmentPaths, outputPath)
-	case model.MergeModeFFmpeg:
-		ffmpegPath := req.FFmpegPath
-		if ffmpegPath == "" {
-			ffmpegPath = "ffmpeg"
-		}
-		emitLog(LogInfo, fmt.Sprintf("Using ffmpeg merge (%s)", ffmpegPath))
-		err = merge.FFmpegMerge(segmentPaths, outputPath, ffmpegPath)
-	default:
-		err = merge.BinaryMerge(segmentPaths, outputPath)
-	}
 
-	if err != nil {
-		emitStatus(model.TaskStatusFailed)
-		return fmt.Errorf("merge: %w", err)
+		if err != nil {
+			emitStatus(model.TaskStatusFailed)
+			return fmt.Errorf("merge: %w", err)
+		}
 	}
 
 	// 5. Final report
@@ -542,6 +547,12 @@ func buildOutputPath(req model.DownloadRequest) string {
 	}
 	// Add extension based on merge mode
 	switch req.MergeMode {
+	case model.MergeModeNo:
+		// No merge — return temp dir as output reference
+		if req.TmpDir != "" {
+			return req.TmpDir
+		}
+		return filepath.Join(dir, name+"_tmp")
 	case model.MergeModeBinary:
 		return filepath.Join(dir, name+".ts")
 	case model.MergeModeTS2MP4, model.MergeModeFMP4:
@@ -563,6 +574,8 @@ func mergeModeStr(m model.MergeMode) string {
 		return "fmp4"
 	case model.MergeModeFFmpeg:
 		return "ffmpeg"
+	case model.MergeModeNo:
+		return "no (download only)"
 	default:
 		return "unknown"
 	}

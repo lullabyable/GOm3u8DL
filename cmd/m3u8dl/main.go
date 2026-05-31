@@ -89,7 +89,7 @@ func main() {
 	flag.StringVar(&saveName, "save-name", "", "Output filename (without extension)")
 	flag.IntVar(&concurrency, "concurrency", 8, "Segment download concurrency")
 	flag.Int64Var(&maxSpeed, "max-speed", 0, "Max download speed in bytes/sec (0=unlimited)")
-	flag.StringVar(&mergeMode, "merge", "ts2mp4", "Merge mode: binary, ts2mp4, fmp4, ffmpeg")
+	flag.StringVar(&mergeMode, "merge", "ts2mp4", "Merge mode: binary, ts2mp4, fmp4, ffmpeg, no")
 	flag.Var(&headers, "H", "HTTP header (repeatable, format: Key: Value)")
 	flag.Var(&keys, "key", "Decryption key in kid:key hex format (repeatable)")
 	flag.BoolVar(&autoSub, "auto-subtitle-fix", false, "Auto-fix subtitle timing")
@@ -160,6 +160,8 @@ func main() {
 					mergeMode = "fmp4"
 				case 3:
 					mergeMode = "ffmpeg"
+				case 4:
+					mergeMode = "no"
 				}
 			}
 			if !cliFlags["auto-subtitle-fix"] && cfg.AutoSubtitleFix {
@@ -312,7 +314,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 	fmt.Printf("    -save-name <name>     Output filename      %s(default: auto)%s\n", grey, reset)
 	fmt.Printf("    -concurrency <n>      Thread count         %s(default: 8)%s\n", grey, reset)
 	fmt.Printf("    -max-speed <n>        Speed limit          %s(e.g. 2M, 500K, default: unlimited)%s\n", grey, reset)
-	fmt.Printf("    -merge <mode>         Merge mode           %s(binary/ts2mp4/fmp4/ffmpeg, default: ts2mp4)%s\n", grey, reset)
+	fmt.Printf("    -merge <mode>         Merge mode           %s(binary/ts2mp4/fmp4/ffmpeg/no, default: ts2mp4)%s\n", grey, reset)
 	fmt.Printf("    -H <header>           HTTP header          %s(repeatable, Key: Value)%s\n", grey, reset)
 	fmt.Printf("    -key <kid:key>        Decryption key       %s(repeatable, hex)%s\n", grey, reset)
 	fmt.Printf("    -sv <filter>          Stream filter        %s(e.g. res=1920x1080)%s\n", grey, reset)
@@ -871,8 +873,17 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	clearProgress()
 	fmt.Printf("%s[info]%s Audio done: %d segments\n", green, reset, len(audioResult.SegmentPaths))
 
-	// Mux
+	// Mux (skip if MergeModeNo)
 	outputPath := filepath.Join(outputDir, saveName+".mp4")
+
+	if mode == model.MergeModeNo {
+		fmt.Printf("\n%s[info]%s Download only mode — segments saved to: %s\n", cyan, reset, rootTmp)
+		fmt.Printf("%s[info]%s Video: %d segments in %s\n", green, reset, len(videoResult.SegmentPaths), filepath.Join(rootTmp, "video_tmp"))
+		fmt.Printf("%s[info]%s Audio: %d segments in %s\n", green, reset, len(audioResult.SegmentPaths), filepath.Join(rootTmp, "audio_tmp"))
+		printDone(rootTmp)
+		return
+	}
+
 	fmt.Printf("\n%s[info]%s Muxing %d video + %d audio → %s (%s)\n",
 		cyan, reset, len(videoResult.SegmentPaths), len(audioResult.SegmentPaths), outputPath, mergeModeStr(mode))
 
@@ -1031,6 +1042,8 @@ func parseMergeMode(s string) model.MergeMode {
 		return model.MergeModeFMP4
 	case "ffmpeg":
 		return model.MergeModeFFmpeg
+	case "no":
+		return model.MergeModeNo
 	default:
 		return model.MergeModeTS2MP4
 	}
@@ -1042,6 +1055,9 @@ func buildOutputPath(dir, name string, mode model.MergeMode) string {
 	}
 	if mode == model.MergeModeBinary {
 		return filepath.Join(dir, name+".ts")
+	}
+	if mode == model.MergeModeNo {
+		return filepath.Join(dir, name+"_tmp")
 	}
 	return filepath.Join(dir, name+".mp4")
 }
@@ -1056,6 +1072,8 @@ func mergeModeStr(m model.MergeMode) string {
 		return "fmp4"
 	case model.MergeModeFFmpeg:
 		return "ffmpeg"
+	case model.MergeModeNo:
+		return "no (download only)"
 	default:
 		return "unknown"
 	}

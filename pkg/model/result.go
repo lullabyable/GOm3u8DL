@@ -18,6 +18,7 @@ const (
 	MergeModeTS2MP4                  // pure Go TS→MP4 remux (gomedia)
 	MergeModeFMP4                    // pure Go fragmented MP4 (mp4ff)
 	MergeModeFFmpeg                  // external ffmpeg (Dolby Vision etc.)
+	MergeModeNo                      // download only, skip merge, keep segments + temp dir
 )
 
 // DownloadRequest configures a single download operation.

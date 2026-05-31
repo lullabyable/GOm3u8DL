@@ -244,6 +244,7 @@ Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 | `ts2mp4` | 纯 Go TS→MP4 remux（**推荐**） | 无 | `.mp4` |
 | `fmp4` | 纯 Go fragmented MP4 合并 | 无 | `.mp4` |
 | `ffmpeg` | 调用外部 ffmpeg 合并 | ffmpeg | `.mp4` |
+| `no` | 仅下载不合并，保留切片文件和临时目录 | 无 | 切片原始格式 |
 
 ```bash
 # 使用 TS→MP4 remux（默认，纯 Go 无需外部工具）
@@ -292,7 +293,7 @@ GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
 | `max_speed` | int64 | `0` | 最大下载速度（bytes/sec），0=不限 |
 | `output_dir` | string | `.` | 默认输出目录 |
 | `tmp_dir` | string | `""` | 临时文件目录，为空时使用 output_dir |
-| `merge_mode` | int | `0` | 合并模式：0=binary, 1=ts2mp4, 2=fmp4, 3=ffmpeg |
+| `merge_mode` | int | `0` | 合并模式：0=binary, 1=ts2mp4, 2=fmp4, 3=ffmpeg, 4=no（仅下载不合并，保留切片和临时目录） |
 | `ffmpeg_path` | string | `""` | ffmpeg 可执行文件路径 |
 | `del_after_done` | bool | `false` | 下载完成后删除临时文件 |
 | `mux_after_done` | bool | `false` | 下载完成后重新封装 |
