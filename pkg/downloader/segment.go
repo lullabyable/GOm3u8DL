@@ -42,8 +42,9 @@ type DownloadResult struct {
 }
 
 // Download downloads a single segment to the given directory.
-// If the segment is encrypted, it decrypts the data before writing.
-func (sd *SegmentDownloader) Download(ctx context.Context, seg model.MediaSegment, tempDir string) DownloadResult {
+// posIndex is the 0-based position index used for filename, ensuring
+// correct ordering regardless of the segment's own Index field.
+func (sd *SegmentDownloader) Download(ctx context.Context, seg model.MediaSegment, tempDir string, posIndex int) DownloadResult {
 	var lastErr error
 
 	for attempt := 0; attempt <= sd.retries; attempt++ {
@@ -71,8 +72,8 @@ func (sd *SegmentDownloader) Download(ctx context.Context, seg model.MediaSegmen
 			}
 		}
 
-		// Write to file
-		filename := fmt.Sprintf("seg_%d.ts", seg.Index)
+		// Write to file — use position index for consistent 0-based naming
+		filename := fmt.Sprintf("seg_%d.ts", posIndex)
 		filePath := filepath.Join(tempDir, filename)
 		if err := os.WriteFile(filePath, data, 0644); err != nil {
 			lastErr = fmt.Errorf("write file: %w", err)

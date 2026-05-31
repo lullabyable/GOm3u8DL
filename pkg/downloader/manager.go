@@ -80,7 +80,7 @@ func (m *Manager) DownloadSegments(ctx context.Context, playlist *model.Playlist
 	// Download init segment if present
 	if playlist.MediaInit != nil {
 		sd := NewSegmentDownloader(m.client, m.retries)
-		result := sd.Download(ctx, *playlist.MediaInit, tempDir)
+		result := sd.Download(ctx, *playlist.MediaInit, tempDir, -1)
 		if result.Error != nil {
 			return nil, fmt.Errorf("download init segment: %w", result.Error)
 		}
@@ -135,7 +135,7 @@ func (m *Manager) DownloadSegments(ctx context.Context, playlist *model.Playlist
 						continue
 					}
 				}
-				result := sd.Download(ctx, seg, tempDir)
+				result := sd.Download(ctx, seg, tempDir, idx)
 				if result.Error == nil {
 					tracker.AddBytes(result.Bytes)
 					tracker.SegmentDone()
@@ -188,6 +188,7 @@ func CleanupTemp(tempDir string) error {
 }
 
 // SegmentPath returns the expected path for a downloaded segment.
+// index is the 0-based position index (not the segment's own Index field).
 func SegmentPath(tempDir string, index int) string {
 	return filepath.Join(tempDir, fmt.Sprintf("seg_%d.ts", index))
 }
