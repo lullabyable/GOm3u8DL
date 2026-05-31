@@ -190,8 +190,9 @@ Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 |------|--------|------|
 | `-concurrency` | `8` | 分段下载并发数 |
 | `-max-speed` | `0`（不限速） | 最大下载速度（bytes/sec），支持人类可读格式如 `2M`、`500K` |
-| `-merge` | `ts2mp4` | 合并模式，可选：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` |
-| `-sv` | 空 | 流选择过滤器（见上方流选择器章节），为空时自动选择最高画质 |
+| `-merge` | `ts2mp4` | 合并模式，可选：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并） |
+| `-ffmpeg-dir` | 空 | ffmpeg 路径（可执行文件或目录），`-merge ffmpeg` 时自动查找 |
+| `-sv` | `best` | 流选择过滤器（见上方流选择器章节），为空时自动选择最高画质 |
 
 ### 输出控制
 
@@ -256,11 +257,11 @@ Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 
 ## 配置文件
 
-GOm3u8DL 支持 JSON 配置文件，按以下顺序查找：
+GOm3u8DL 支持 JSON 配置文件（非必须，省去每次填写长串参数），按以下顺序查找：
 
-1. 环境变量 `M3U8DL_CONFIG` 指定的路径
-2. `~/.config/m3u8dl/config.json`
-3. 当前目录下的 `m3u8dl.json`
+1. 当前目录下的 `m3u8dl.json`
+2. 环境变量 `M3U8DL_CONFIG` 指定的路径
+3. `~/.config/m3u8dl/config.json`
 
 ### 配置文件示例
 

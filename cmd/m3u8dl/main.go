@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -75,6 +76,7 @@ func main() {
 		concurrency int
 		maxSpeed    int64
 		mergeMode   string
+		ffmpegDir   string
 		headers     stringSlice
 		keys        stringSlice
 		autoSub     bool
@@ -90,6 +92,7 @@ func main() {
 	flag.IntVar(&concurrency, "concurrency", 8, "Segment download concurrency")
 	flag.Int64Var(&maxSpeed, "max-speed", 0, "Max download speed in bytes/sec (0=unlimited)")
 	flag.StringVar(&mergeMode, "merge", "ts2mp4", "Merge mode: binary, ts2mp4, fmp4, ffmpeg, no")
+	flag.StringVar(&ffmpegDir, "ffmpeg-dir", "", "Path to ffmpeg binary or directory")
 	flag.Var(&headers, "H", "HTTP header (repeatable, format: Key: Value)")
 	flag.Var(&keys, "key", "Decryption key in kid:key hex format (repeatable)")
 	flag.BoolVar(&autoSub, "auto-subtitle-fix", false, "Auto-fix subtitle timing")
@@ -116,7 +119,7 @@ func main() {
 
 	// ── Interactive mode (one-shot) ─────────────────────────────────
 	if url == "" && !hasStdinPiped() {
-		url, outputDir, tmpDir, saveName, concurrency, maxSpeed, mergeMode, headers, keys, autoSub, subOnly, svSelect = interactiveMode()
+		url, outputDir, tmpDir, saveName, concurrency, maxSpeed, mergeMode, ffmpegDir, headers, keys, autoSub, subOnly, svSelect = interactiveMode()
 		if url == "" {
 			fmt.Fprintf(os.Stderr, "%sError: URL is required%s\n", red, reset)
 			os.Exit(1)
@@ -152,6 +155,9 @@ func main() {
 			}
 			if !cliFlags["merge"] && cfg.Merge != "" {
 				mergeMode = cfg.Merge
+			}
+			if !cliFlags["ffmpeg-dir"] && cfg.FFmpegDir != "" {
+				ffmpegDir = cfg.FFmpegDir
 			}
 			if !cliFlags["auto-subtitle-fix"] && cfg.AutoSubtitleFix {
 				autoSub = true
@@ -194,6 +200,13 @@ func main() {
 	}
 
 	mode := parseMergeMode(mergeMode)
+
+	// Validate ffmpeg availability if merge mode is ffmpeg
+	var ffmpegPath string
+	if mode == model.MergeModeFFmpeg {
+		ffmpegPath = findFFmpeg(ffmpegDir)
+		fmt.Printf("%s[info]%s Using ffmpeg: %s\n", cyan, reset, ffmpegPath)
+	}
 
 	engine := m3u8dl.New(
 		m3u8dl.WithSegmentConcurrency(concurrency),
@@ -252,7 +265,7 @@ func main() {
 
 	if hasSeparateAV {
 		downloadSeparateStreams(ctx, engine, url, videoStreams, audioStreams,
-			svSelect, outputDir, tmpDir, saveName, headerMap, concurrency, maxSpeed, mode, autoSub, subOnly)
+			svSelect, outputDir, tmpDir, saveName, headerMap, concurrency, maxSpeed, mode, ffmpegPath, autoSub, subOnly)
 	} else {
 		var selected *model.StreamInfo
 		if svSelect != "" {
@@ -269,7 +282,7 @@ func main() {
 
 		fmt.Printf("\n%s[info]%s Selected: %s\n", cyan, reset, streamToShortString(*selected))
 		downloadSingleStream(ctx, engine, url, selected, outputDir, tmpDir, saveName,
-			headerMap, concurrency, maxSpeed, mode, autoSub, subOnly)
+			headerMap, concurrency, maxSpeed, mode, ffmpegPath, autoSub, subOnly)
 	}
 }
 
@@ -286,7 +299,7 @@ func hasStdinPiped() bool {
 // interactiveMode provides a one-shot input experience.
 // The user enters everything in a single line, or presses Enter for a guided one-line prompt.
 func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int, maxSpeed int64,
-	mergeMode string, headers stringSlice, keys stringSlice, autoSub, subOnly bool, svSelect string) {
+	mergeMode string, ffmpegDir string, headers stringSlice, keys stringSlice, autoSub, subOnly bool, svSelect string) {
 
 	reader := bufio.NewReader(os.Stdin)
 	mergeMode = "ts2mp4"
@@ -304,6 +317,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 	fmt.Printf("    -concurrency <n>      Thread count         %s(default: 8)%s\n", grey, reset)
 	fmt.Printf("    -max-speed <n>        Speed limit          %s(e.g. 2M, 500K, default: unlimited)%s\n", grey, reset)
 	fmt.Printf("    -merge <mode>         Merge mode           %s(binary/ts2mp4/fmp4/ffmpeg/no, default: ts2mp4)%s\n", grey, reset)
+	fmt.Printf("    -ffmpeg-dir <path>    ffmpeg path          %s(binary or directory)%s\n", grey, reset)
 	fmt.Printf("    -H <header>           HTTP header          %s(repeatable, Key: Value)%s\n", grey, reset)
 	fmt.Printf("    -key <kid:key>        Decryption key       %s(repeatable, hex)%s\n", grey, reset)
 	fmt.Printf("    -sv <filter>          Stream filter        %s(e.g. res=1920x1080)%s\n", grey, reset)
@@ -360,6 +374,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 		fs.IntVar(&concurrency, "concurrency", 8, "")
 		fs.Int64Var(&maxSpeed, "max-speed", 0, "")
 		fs.StringVar(&mergeMode, "merge", "ts2mp4", "")
+		fs.StringVar(&ffmpegDir, "ffmpeg-dir", "", "")
 		fs.Var(&headers, "H", "")
 		fs.Var(&keys, "key", "")
 		fs.BoolVar(&autoSub, "auto-subtitle-fix", false, "")
@@ -735,7 +750,7 @@ func formatDuration(seconds float64) string {
 func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url string,
 	videoStreams, audioStreams []model.StreamInfo, svSelect, outputDir, tmpDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
-	autoSub, subOnly bool) {
+	ffmpegPath string, autoSub, subOnly bool) {
 
 	// Select video
 	var selectedVideo *model.StreamInfo
@@ -894,7 +909,7 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		am := filepath.Join(rootTmp, "audio_merged.ts")
 		merge.BinaryMerge(videoResult.SegmentPaths, vm)
 		merge.BinaryMerge(audioResult.SegmentPaths, am)
-		muxErr = merge.FFmpegMuxAV(vm, am, outputPath, "ffmpeg")
+		muxErr = merge.FFmpegMuxAV(vm, am, outputPath, ffmpegPath)
 	default:
 		if isTS {
 			muxErr = merge.MuxSeparateTSStreams(videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
@@ -918,7 +933,7 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string,
 	selected *model.StreamInfo, outputDir, tmpDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
-	autoSub, subOnly bool) {
+	ffmpegPath string, autoSub, subOnly bool) {
 
 	startTime := time.Now()
 	resetProgress()
@@ -937,6 +952,7 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 		MaxSpeed:           maxSpeed,
 		DownloadRetryCount: 3,
 		MergeMode:          mode,
+		FFmpegPath:         ffmpegPath,
 		AutoSubtitleFix:    autoSub,
 		SubOnly:            subOnly,
 		DelAfterDone:       true,
@@ -1312,4 +1328,52 @@ func (s *stringSlice) String() string { return strings.Join(*s, ", ") }
 func (s *stringSlice) Set(v string) error {
 	*s = append(*s, v)
 	return nil
+}
+
+// findFFmpeg locates the ffmpeg binary. Search order:
+// 1. User-specified path (from -ffmpeg-dir or config)
+// 2. System PATH (just run "ffmpeg")
+// If not found, prompts the user to enter the path.
+func findFFmpeg(userPath string) string {
+	// 1. User-specified path
+	if userPath != "" {
+		if _, err := os.Stat(userPath); err == nil {
+			return userPath
+		}
+		// Maybe it's a directory
+		candidate := filepath.Join(userPath, "ffmpeg")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		candidate = filepath.Join(userPath, "ffmpeg.exe")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		fmt.Printf("  %s[warn]%s ffmpeg not found at: %s\n", yellow, reset, userPath)
+	}
+
+	// 2. System PATH
+	if _, err := exec.LookPath("ffmpeg"); err == nil {
+		return "ffmpeg"
+	}
+
+	// 3. Prompt user
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Printf("  %s[warn]%s ffmpeg not found in PATH\n", yellow, reset)
+		fmt.Printf("  %s▶%s Enter ffmpeg path (or install it and press Enter to retry): ", green, reset)
+		line, _ := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line == "" {
+			// Retry PATH check
+			if _, err := exec.LookPath("ffmpeg"); err == nil {
+				return "ffmpeg"
+			}
+			continue
+		}
+		if _, err := os.Stat(line); err == nil {
+			return line
+		}
+		fmt.Printf("  %s[error]%s File not found: %s\n", red, reset, line)
+	}
 }
