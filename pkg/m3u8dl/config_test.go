@@ -199,19 +199,48 @@ func TestSaveConfigCreatesDirs(t *testing.T) {
 }
 
 func TestFindConfig(t *testing.T) {
-	// Test with env variable
+	// Test priority: current dir > env > xdg
+	// Current dir wins over env
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "env-config.json")
-	os.WriteFile(cfgPath, []byte(`{}`), 0644)
+	envPath := filepath.Join(dir, "env-config.json")
+	os.WriteFile(envPath, []byte(`{}`), 0644)
 
-	t.Setenv("M3U8DL_CONFIG", cfgPath)
+	t.Setenv("M3U8DL_CONFIG", envPath)
+
+	// With no m3u8dl.json in cwd, env should be found
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
 
 	path, found := FindConfig()
 	if !found {
 		t.Error("FindConfig should find env config")
 	}
-	if path != cfgPath {
-		t.Errorf("FindConfig path = %q, want %q", path, cfgPath)
+	if path != envPath {
+		t.Errorf("FindConfig path = %q, want %q", path, envPath)
+	}
+}
+
+func TestFindConfigCurrentDirPriority(t *testing.T) {
+	// Current dir config should win over env config
+	dir := t.TempDir()
+	localPath := filepath.Join(dir, "m3u8dl.json")
+	envPath := filepath.Join(dir, "env-config.json")
+	os.WriteFile(localPath, []byte(`{}`), 0644)
+	os.WriteFile(envPath, []byte(`{}`), 0644)
+
+	t.Setenv("M3U8DL_CONFIG", envPath)
+
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+
+	path, found := FindConfig()
+	if !found {
+		t.Error("FindConfig should find local config")
+	}
+	if path != "m3u8dl.json" {
+		t.Errorf("FindConfig path = %q, want %q (current dir should win)", path, "m3u8dl.json")
 	}
 }
 

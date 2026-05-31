@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	version = "dev"
+	version = "1.0.0"
 	commit  = "none"
 )
 
@@ -101,12 +101,18 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Track which flags were explicitly set via CLI (for config conflict resolution)
+	cliFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		cliFlags[f.Name] = true
+	})
+
 	// URL can also be a positional argument
 	if url == "" && flag.NArg() > 0 {
 		url = flag.Arg(0)
 	}
 
-	// ── Interactive mode (double-click) ─────────────────────────────
+	// ── Interactive mode (one-shot) ─────────────────────────────────
 	if url == "" && !hasStdinPiped() {
 		url, outputDir, saveName, concurrency, maxSpeed, mergeMode, headers, keys, autoSub, subOnly, svSelect = interactiveMode()
 		if url == "" {
@@ -119,10 +125,67 @@ func main() {
 		fmt.Fprintf(os.Stderr, "GOm3u8DL %s (%s)\n\n", version, commit)
 		fmt.Fprintln(os.Stderr, "Usage: m3u8dl -url <URL> [options]")
 		fmt.Fprintln(os.Stderr, "       m3u8dl <URL> [options]")
-		fmt.Fprintln(os.Stderr, "       m3u8dl  (interactive mode)")
+		fmt.Fprintln(os.Stderr, "       m3u8dl  (one-shot interactive: <URL> [flags])")
 		fmt.Fprintln(os.Stderr)
 		flag.PrintDefaults()
 		os.Exit(1)
+	}
+
+	// ── Load config file (CLI flags take priority) ──────────────────
+	if cfgPath, found := m3u8dl.FindConfig(); found {
+		cfg, err := m3u8dl.LoadConfig(cfgPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s[warn]%s Config load failed (%s): %v\n", yellow, reset, cfgPath, err)
+		} else {
+			fmt.Printf("%s[info]%s Config loaded: %s\n", cyan, reset, cfgPath)
+			// Apply config defaults — only for flags NOT explicitly set via CLI
+			if !cliFlags["concurrency"] && cfg.ThreadCount > 0 {
+				concurrency = cfg.ThreadCount
+			}
+			if !cliFlags["max-speed"] && cfg.MaxSpeed > 0 {
+				maxSpeed = cfg.MaxSpeed
+			}
+			if !cliFlags["o"] && cfg.OutputDir != "" && cfg.OutputDir != "/downloads" {
+				outputDir = cfg.OutputDir
+			}
+			if !cliFlags["merge"] && cfg.MergeMode > 0 {
+				switch cfg.MergeMode {
+				case 0:
+					mergeMode = "binary"
+				case 1:
+					mergeMode = "ts2mp4"
+				case 2:
+					mergeMode = "fmp4"
+				case 3:
+					mergeMode = "ffmpeg"
+				}
+			}
+			if !cliFlags["auto-subtitle-fix"] && cfg.AutoSubtitleFix {
+				autoSub = true
+			}
+			// Merge headers: config provides base, CLI overrides same keys.
+			// Always merge (not gated on len(cfg.Headers)) so CLI headers
+			// are never lost even when config has no headers.
+			if len(cfg.Headers) > 0 || len(headers) > 0 {
+				merged := make(map[string]string)
+				// 1. Config headers as base
+				for k, v := range cfg.Headers {
+					merged[k] = v
+				}
+				// 2. CLI headers override
+				for _, h := range headers {
+					parts := strings.SplitN(h, ":", 2)
+					if len(parts) == 2 {
+						merged[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+					}
+				}
+				// 3. Rebuild headers slice from merged map
+				headers = make([]string, 0, len(merged))
+				for k, v := range merged {
+					headers = append(headers, k+": "+v)
+				}
+			}
+		}
 	}
 
 	// Parse headers
@@ -224,6 +287,8 @@ func hasStdinPiped() bool {
 	return fi.Mode()&os.ModeCharDevice == 0
 }
 
+// interactiveMode provides a one-shot input experience.
+// The user enters everything in a single line, or presses Enter for a guided one-line prompt.
 func interactiveMode() (url, outputDir, saveName string, concurrency int, maxSpeed int64,
 	mergeMode string, headers stringSlice, keys stringSlice, autoSub, subOnly bool, svSelect string) {
 
@@ -234,83 +299,110 @@ func interactiveMode() (url, outputDir, saveName string, concurrency int, maxSpe
 	fmt.Printf("  %s%sGOm3u8DL%s — Stream Downloader\n", cyan, bold, reset)
 	fmt.Printf("  %sPure Go HLS / DASH / MSS%s\n\n", dim, reset)
 
-	// URL
+	// Show usage hint
+	fmt.Printf("  %sUsage:%s <URL> [flags]    %s(flags are optional, press Enter for defaults)%s\n\n", bold, reset, dim, reset)
+	fmt.Printf("  %sAvailable flags:%s\n", dim, reset)
+	fmt.Printf("    -o <dir>              Output directory     %s(default: /downloads)%s\n", grey, reset)
+	fmt.Printf("    -save-name <name>     Output filename      %s(default: auto)%s\n", grey, reset)
+	fmt.Printf("    -concurrency <n>      Thread count         %s(default: 8)%s\n", grey, reset)
+	fmt.Printf("    -max-speed <n>        Speed limit          %s(e.g. 2M, 500K, default: unlimited)%s\n", grey, reset)
+	fmt.Printf("    -merge <mode>         Merge mode           %s(binary/ts2mp4/fmp4/ffmpeg, default: ts2mp4)%s\n", grey, reset)
+	fmt.Printf("    -H <header>           HTTP header          %s(repeatable, Key: Value)%s\n", grey, reset)
+	fmt.Printf("    -key <kid:key>        Decryption key       %s(repeatable, hex)%s\n", grey, reset)
+	fmt.Printf("    -sv <filter>          Stream filter        %s(e.g. res=1920x1080)%s\n", grey, reset)
+	fmt.Printf("    -auto-subtitle-fix    Auto-fix subtitle timing\n")
+	fmt.Printf("    -sub-only             Download subtitles only\n\n")
+
+	// Single line input
 	for {
-		fmt.Printf("  %s▶%s Input URL %s(required)%s: ", green, reset, yellow, reset)
-		url, _ = reader.ReadString('\n')
-		url = strings.TrimSpace(url)
-		if url != "" {
-			break
+		fmt.Printf("  %s▶%s ", green, reset)
+		line, _ := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line == "" {
+			fmt.Printf("    %s⚠ URL is required, please enter at least a URL%s\n\n", red, reset)
+			continue
 		}
-		fmt.Printf("    %s⚠ URL cannot be empty%s\n\n", red, reset)
-	}
 
-	// Output dir
-	fmt.Printf("  %s▶%s Save directory %s[default: /downloads]%s: ", green, reset, dim, reset)
-	outputDir, _ = reader.ReadString('\n')
-	outputDir = strings.TrimSpace(outputDir)
-	if outputDir == "" {
-		outputDir = "/downloads"
-	}
+		args := splitCommandLine(line)
 
-	// Save name
-	fmt.Printf("  %s▶%s Save name %s[default: auto]%s: ", green, reset, dim, reset)
-	saveName, _ = reader.ReadString('\n')
-	saveName = strings.TrimSpace(saveName)
-
-	// Concurrency
-	fmt.Printf("  %s▶%s Thread count %s[default: 8]%s: ", green, reset, dim, reset)
-	cStr, _ := reader.ReadString('\n')
-	concurrency = 8
-	if s := strings.TrimSpace(cStr); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			concurrency = n
+		// First non-flag arg is the URL
+		var remaining []string
+		for i := 0; i < len(args); i++ {
+			if args[i][0] == '-' {
+				// It's a flag, collect it and its value (if any)
+				remaining = append(remaining, args[i])
+				// Boolean flags don't have values
+				if args[i] == "-auto-subtitle-fix" || args[i] == "-sub-only" || args[i] == "-version" {
+					continue
+				}
+				// Next arg might be the value
+				if i+1 < len(args) && args[i+1][0] != '-' {
+					i++
+					remaining = append(remaining, args[i])
+				}
+			} else {
+				// First non-flag is URL
+				if url == "" {
+					url = args[i]
+				} else {
+					remaining = append(remaining, args[i])
+				}
+			}
 		}
-	}
 
-	// Max speed
-	fmt.Printf("  %s▶%s Speed limit %s[e.g. 2M / 500K / 0=unlimited]%s: ", green, reset, dim, reset)
-	spStr, _ := reader.ReadString('\n')
-	maxSpeed = parseSpeed(strings.TrimSpace(spStr))
-
-	// Merge mode
-	fmt.Printf("  %s▶%s Binary merge? %s[y/N, default: N → ts2mp4]%s: ", green, reset, dim, reset)
-	binStr, _ := reader.ReadString('\n')
-	if strings.ToLower(strings.TrimSpace(binStr)) == "y" {
-		mergeMode = "binary"
-	}
-
-	// Headers
-	fmt.Printf("  %s▶%s HTTP Headers %s(Key: Value, empty to finish)%s:\n", green, reset, dim, reset)
-	for {
-		fmt.Printf("    %s>%s ", dim, reset)
-		h, _ := reader.ReadString('\n')
-		h = strings.TrimSpace(h)
-		if h == "" {
-			break
+		if url == "" {
+			fmt.Printf("    %s⚠ No URL found in input%s\n\n", red, reset)
+			continue
 		}
-		headers = append(headers, h)
-	}
 
-	// Keys
-	fmt.Printf("  %s▶%s Decryption keys %s(kid:key hex, empty to finish)%s:\n", green, reset, dim, reset)
-	for {
-		fmt.Printf("    %s>%s ", dim, reset)
-		k, _ := reader.ReadString('\n')
-		k = strings.TrimSpace(k)
-		if k == "" {
-			break
+		// Parse the remaining flags
+		fs := flag.NewFlagSet("interactive", flag.ContinueOnError)
+		fs.StringVar(&outputDir, "o", "/downloads", "")
+		fs.StringVar(&saveName, "save-name", "", "")
+		fs.IntVar(&concurrency, "concurrency", 8, "")
+		fs.Int64Var(&maxSpeed, "max-speed", 0, "")
+		fs.StringVar(&mergeMode, "merge", "ts2mp4", "")
+		fs.Var(&headers, "H", "")
+		fs.Var(&keys, "key", "")
+		fs.BoolVar(&autoSub, "auto-subtitle-fix", false, "")
+		fs.BoolVar(&subOnly, "sub-only", false, "")
+		fs.StringVar(&svSelect, "sv", "", "")
+
+		if err := fs.Parse(remaining); err != nil {
+			fmt.Printf("    %s⚠ Parse error: %v%s\n\n", red, reset, err)
+			url = ""
+			continue
 		}
-		keys = append(keys, k)
+		break
 	}
-
-	// sv filter
-	fmt.Printf("  %s▶%s Stream filter %s[-sv filter, empty for interactive]%s: ", green, reset, dim, reset)
-	svSelect, _ = reader.ReadString('\n')
-	svSelect = strings.TrimSpace(svSelect)
 
 	fmt.Println()
 	return
+}
+
+// splitCommandLine splits a line into arguments, respecting double-quoted strings.
+func splitCommandLine(line string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+
+	for _, r := range line {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+		case r == ' ' && !inQuote:
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
 }
 
 func parseSpeed(s string) int64 {
