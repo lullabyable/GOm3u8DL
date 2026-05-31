@@ -256,16 +256,15 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
-	// Temp dir: use explicit TmpDir if set, otherwise {outputDir}/{saveName}_tmp
-	// Always create a subdirectory based on SaveName to keep video/audio separate.
+	// Temp dir: if TmpDir is set, use it directly (caller controls structure).
+	// Otherwise default to {outputDir}/{saveName}_tmp.
 	tempDir := req.TmpDir
 	if tempDir == "" {
-		tempDir = outDir
-	}
-	if req.SaveName != "" {
-		tempDir = filepath.Join(tempDir, req.SaveName+"_tmp")
-	} else {
-		tempDir = filepath.Join(tempDir, "download_tmp")
+		if req.SaveName != "" {
+			tempDir = filepath.Join(outDir, req.SaveName+"_tmp")
+		} else {
+			tempDir = filepath.Join(outDir, "download_tmp")
+		}
 	}
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -437,16 +436,15 @@ func (e *Engine) DownloadOnly(ctx context.Context, req model.DownloadRequest, ha
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
-	// Temp dir: use explicit TmpDir if set, otherwise {outputDir}/{saveName}_tmp
-	// Always create a subdirectory based on SaveName to keep video/audio separate.
+	// Temp dir: if TmpDir is set, use it directly (caller controls structure).
+	// Otherwise default to {outputDir}/{saveName}_tmp.
 	tempDir := req.TmpDir
 	if tempDir == "" {
-		tempDir = outDir
-	}
-	if req.SaveName != "" {
-		tempDir = filepath.Join(tempDir, req.SaveName+"_tmp")
-	} else {
-		tempDir = filepath.Join(tempDir, "download_tmp")
+		if req.SaveName != "" {
+			tempDir = filepath.Join(outDir, req.SaveName+"_tmp")
+		} else {
+			tempDir = filepath.Join(outDir, "download_tmp")
+		}
 	}
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)

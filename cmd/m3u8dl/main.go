@@ -776,6 +776,19 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	videoDesc := streamToShortString(*selectedVideo)
 	audioDesc := streamToShortString(*selectedAudio)
 
+	// Create root temp directory: {save-dir}/{saveName}_tmp/
+	// video_tmp/ and audio_tmp/ will be created inside by the engine.
+	baseDir := tmpDir
+	if baseDir == "" {
+		baseDir = outputDir
+	}
+	rootTmp := filepath.Join(baseDir, saveName+"_tmp")
+	if err := os.MkdirAll(rootTmp, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "%s[error]%s Create temp dir: %v\n", red, reset, err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s[info]%s Temp dir: %s\n", cyan, reset, rootTmp)
+
 	var lastProgressTime time.Time
 	handler := m3u8dl.EventHandlerFunc{
 		OnProgressFn: func(e m3u8dl.ProgressEvent) {
@@ -806,8 +819,8 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		Stream:             selectedVideo,
 		URL:                url,
 		OutputDir:          outputDir,
-		TmpDir:             tmpDir,
-		SaveName:           saveName + "_video",
+		TmpDir:             filepath.Join(rootTmp, "video_tmp"),
+		SaveName:           saveName,
 		Headers:            headerMap,
 		ThreadCount:        concurrency,
 		MaxSpeed:           maxSpeed,
@@ -821,7 +834,6 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		fmt.Fprintf(os.Stderr, "\n%s[error]%s Video download failed: %v\n", red, reset, err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(videoResult.TempDir)
 	clearProgress()
 	fmt.Printf("%s[info]%s Video done: %d segments\n", green, reset, len(videoResult.SegmentPaths))
 
@@ -841,8 +853,8 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		Stream:             selectedAudio,
 		URL:                url,
 		OutputDir:          outputDir,
-		TmpDir:             tmpDir,
-		SaveName:           saveName + "_audio",
+		TmpDir:             filepath.Join(rootTmp, "audio_tmp"),
+		SaveName:           saveName,
 		Headers:            headerMap,
 		ThreadCount:        concurrency,
 		MaxSpeed:           maxSpeed,
@@ -856,7 +868,6 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		fmt.Fprintf(os.Stderr, "\n%s[error]%s Audio download failed: %v\n", red, reset, err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(audioResult.TempDir)
 	clearProgress()
 	fmt.Printf("%s[info]%s Audio done: %d segments\n", green, reset, len(audioResult.SegmentPaths))
 
@@ -879,8 +890,8 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		muxErr = merge.MuxFMP4FromSegments(videoResult.InitPath, audioResult.InitPath,
 			videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
 	case model.MergeModeFFmpeg:
-		vm := filepath.Join(videoResult.TempDir, "video_merged.ts")
-		am := filepath.Join(audioResult.TempDir, "audio_merged.ts")
+		vm := filepath.Join(rootTmp, "video_merged.ts")
+		am := filepath.Join(rootTmp, "audio_merged.ts")
 		merge.BinaryMerge(videoResult.SegmentPaths, vm)
 		merge.BinaryMerge(audioResult.SegmentPaths, am)
 		muxErr = merge.FFmpegMuxAV(vm, am, outputPath, "ffmpeg")
@@ -892,6 +903,9 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 				videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
 		}
 	}
+
+	// Clean up entire rootTmp (video_tmp + audio_tmp + any temp files)
+	os.RemoveAll(rootTmp)
 
 	if muxErr != nil {
 		fmt.Fprintf(os.Stderr, "%s[error]%s Mux failed: %v\n", red, reset, muxErr)
