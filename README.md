@@ -63,21 +63,24 @@ go install github.com/lullabyable/GOm3u8DL/cmd/m3u8dl@latest
 
 ### 双击交互模式
 
-直接运行 `m3u8dl`（不带任何参数），会进入交互式引导：
+直接运行 `m3u8dl`（不带任何参数），进入单行输入模式。在一行内输入 URL 和可选参数，回车即开始下载：
 
 ```
-  ▶ Input URL (required): https://example.com/video/index.m3u8
-  ▶ Save directory [/downloads]: 
-  ▶ Save name [auto]: 
-  ▶ Thread count [8]: 
-  ▶ Speed limit [unlimited]: 2M
-  ▶ Binary merge? [y/N]: 
-  ▶ HTTP Headers (Key: Value, empty to finish):
-    > Referer: https://example.com/
-    > 
-  ▶ Decryption keys (kid:key hex, empty to finish):
-    >
+  GOm3u8DL — Stream Downloader
+  Pure Go HLS / DASH / MSS
+
+  Usage: <URL> [flags]    (flags are optional, press Enter for defaults)
+
+  ▶ https://example.com/video/index.m3u8 -save-dir ./output -concurrency 16
 ```
+
+只输入 URL 即可，其余参数使用默认值：
+
+```
+  ▶ https://example.com/video/index.m3u8
+```
+
+Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 
 ### 基本下载
 
