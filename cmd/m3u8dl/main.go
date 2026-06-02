@@ -95,6 +95,18 @@ func main() {
 	flag.BoolVar(&subOnly, "sub-only", false, "Download subtitles only")
 	flag.BoolVar(&showVersion, "version", false, "Show version")
 	flag.StringVar(&svSelect, "sv", "", "Stream selection filter")
+
+	// Pre-process args: if first arg is a URL (not a flag), insert -url flag
+	// so that flags after the URL (e.g. "m3u8dl <URL> -save-name foo") are parsed.
+	args := os.Args[1:]
+	if len(args) > 0 && len(args[0]) > 0 && args[0][0] != '-' {
+		// First arg is not a flag — treat as URL, insert -url prefix
+		newArgs := make([]string, 0, len(args)+2)
+		newArgs = append(newArgs, "-url", args[0])
+		newArgs = append(newArgs, args[1:]...)
+		os.Args = append([]string{os.Args[0]}, newArgs...)
+	}
+
 	flag.Parse()
 
 	if showVersion {
@@ -108,10 +120,7 @@ func main() {
 		cliFlags[f.Name] = true
 	})
 
-	// URL can also be a positional argument
-	if url == "" && flag.NArg() > 0 {
-		url = flag.Arg(0)
-	}
+	// URL already handled by pre-processing above
 
 	// ── Interactive mode (one-shot) ─────────────────────────────────
 	if url == "" && !hasStdinPiped() {
