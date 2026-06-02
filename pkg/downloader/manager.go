@@ -88,6 +88,24 @@ func (m *Manager) DownloadSegments(ctx context.Context, playlist *model.Playlist
 
 	tracker := NewProgressTracker(len(allSegments))
 
+	// Estimate total size via HEAD request on first segment
+	if len(allSegments) > 0 {
+		go func() {
+			firstSeg := allSegments[0]
+			headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, firstSeg.URL, nil)
+			if err == nil {
+				headResp, err := m.client.Do(headReq)
+				if err == nil {
+					headResp.Body.Close()
+					if headResp.ContentLength > 0 {
+						estimated := headResp.ContentLength * int64(len(allSegments))
+						tracker.SetTotalBytes(estimated)
+					}
+				}
+			}
+		}()
+	}
+
 	// Progress reporting goroutine
 	if m.onProgress != nil {
 		done := make(chan struct{})

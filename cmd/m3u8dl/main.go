@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -55,16 +54,13 @@ const (
 	showCur   = "\033[?25h"
 )
 
-// progressLineCount tracks how many lines the live progress block occupies.
-var progressLineCount int32
-
 // spinner frames
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-var spinnerIdx int32
+var spinnerIdx int
 
 func nextSpinner() string {
-	idx := atomic.AddInt32(&spinnerIdx, 1)
-	return spinnerFrames[int(idx)%len(spinnerFrames)]
+	spinnerIdx++
+	return spinnerFrames[spinnerIdx%len(spinnerFrames)]
 }
 
 func main() {
@@ -86,7 +82,7 @@ func main() {
 	)
 
 	flag.StringVar(&url, "url", "", "M3U8/MPD/ISM URL (required)")
-	flag.StringVar(&outputDir, "save-dir", "/downloads", "Output directory")
+	flag.StringVar(&outputDir, "save-dir", "./downloads", "Output directory")
 	flag.StringVar(&tmpDir, "tmp-dir", "", "Temp directory for downloads (default: {save-dir}/)")
 	flag.StringVar(&saveName, "save-name", "", "Output filename (without extension)")
 	flag.IntVar(&concurrency, "concurrency", 8, "Segment download concurrency")
@@ -150,7 +146,7 @@ func main() {
 			if !cliFlags["max-speed"] && cfg.MaxSpeed > 0 {
 				maxSpeed = cfg.MaxSpeed
 			}
-			if !cliFlags["save-dir"] && cfg.SaveDir != "" && cfg.SaveDir != "/downloads" {
+			if !cliFlags["save-dir"] && cfg.SaveDir != "" && cfg.SaveDir != "./downloads" {
 				outputDir = cfg.SaveDir
 			}
 			if !cliFlags["merge"] && cfg.Merge != "" {
@@ -311,7 +307,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 	// Show usage hint
 	fmt.Printf("  %sUsage:%s <URL> [flags]    %s(flags are optional, press Enter for defaults)%s\n\n", bold, reset, dim, reset)
 	fmt.Printf("  %sAvailable flags:%s\n", dim, reset)
-	fmt.Printf("    -save-dir <dir>       Output directory     %s(default: /downloads)%s\n", grey, reset)
+	fmt.Printf("    -save-dir <dir>       Output directory     %s(default: ./downloads)%s\n", grey, reset)
 	fmt.Printf("    -tmp-dir <dir>        Temp directory       %s(default: {save-dir}/)%s\n", grey, reset)
 	fmt.Printf("    -save-name <name>     Output filename      %s(default: auto)%s\n", grey, reset)
 	fmt.Printf("    -concurrency <n>      Thread count         %s(default: 8)%s\n", grey, reset)
@@ -368,7 +364,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 
 		// Parse the remaining flags
 		fs := flag.NewFlagSet("interactive", flag.ContinueOnError)
-		fs.StringVar(&outputDir, "save-dir", "/downloads", "")
+		fs.StringVar(&outputDir, "save-dir", "./downloads", "")
 		fs.StringVar(&tmpDir, "tmp-dir", "", "")
 		fs.StringVar(&saveName, "save-name", "", "")
 		fs.IntVar(&concurrency, "concurrency", 8, "")
@@ -609,12 +605,6 @@ func alreadySelectedLang(all []indexedStream, lang string) bool {
 //
 //	task description  ██████████████████░░░░░░░░░  128/187  68.45%  156.22MB/228.55MB  12.45MBps  00m05s  ⠹
 func renderProgress(desc string, e m3u8dl.ProgressEvent) {
-	// Move cursor up to overwrite previous block
-	lines := int(atomic.LoadInt32(&progressLineCount))
-	if lines > 0 {
-		fmt.Fprintf(os.Stderr, "\033[%dA", lines)
-	}
-
 	// Progress bar
 	barW := 25
 	filled := int(e.Percent / 100 * float64(barW))
@@ -643,17 +633,12 @@ func renderProgress(desc string, e m3u8dl.ProgressEvent) {
 		yellow, etaStr, reset,
 		spin)
 
-	fmt.Fprintf(os.Stderr, "%s%s\n", eraseLine, line)
-	atomic.StoreInt32(&progressLineCount, 1)
+	// Use \r to overwrite the same line (no trailing newline)
+	fmt.Fprintf(os.Stderr, "\r%s%s", eraseLine, line)
 }
 
 // renderProgressDone shows the final completed state (bar fully filled, green).
 func renderProgressDone(desc string, e m3u8dl.ProgressEvent) {
-	lines := int(atomic.LoadInt32(&progressLineCount))
-	if lines > 0 {
-		fmt.Fprintf(os.Stderr, "\033[%dA", lines)
-	}
-
 	barW := 25
 	bar := strings.Repeat("█", barW)
 	doneTotal := fmt.Sprintf("%d/%d", e.Segments, e.Segments)
@@ -669,26 +654,16 @@ func renderProgressDone(desc string, e m3u8dl.ProgressEvent) {
 		"done!",
 		"✓")
 
-	fmt.Fprintf(os.Stderr, "%s%s\n", eraseLine, line)
-	atomic.StoreInt32(&progressLineCount, 1)
+	// Overwrite current line then print newline to commit
+	fmt.Fprintf(os.Stderr, "\r%s%s\n", eraseLine, line)
 }
 
-// clearProgress erases the live progress block.
+// clearProgress erases the current progress line.
 func clearProgress() {
-	lines := int(atomic.LoadInt32(&progressLineCount))
-	if lines > 0 {
-		for i := 0; i < lines; i++ {
-			fmt.Fprintf(os.Stderr, "%s\n", eraseLine)
-		}
-		fmt.Fprintf(os.Stderr, "\033[%dA", lines)
-	}
-	atomic.StoreInt32(&progressLineCount, 0)
+	fmt.Fprintf(os.Stderr, "\r%s", eraseLine)
 }
 
-// resetProgress resets the counter without erasing (used before starting a new phase).
-func resetProgress() {
-	atomic.StoreInt32(&progressLineCount, 0)
-}
+
 
 func truncateDesc(s string, max int) string {
 	if utf8.RuneCountInString(s) <= max {
@@ -818,7 +793,6 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	}
 
 	// Download video
-	resetProgress()
 	fmt.Printf("\n%s[info]%s Downloading video segments...\n", cyan, reset)
 	fmt.Print(hideCur) // hide cursor during progress
 	videoReq := model.DownloadRequest{
@@ -844,7 +818,6 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	fmt.Printf("%s[info]%s Video done: %d segments\n", green, reset, len(videoResult.SegmentPaths))
 
 	// Download audio
-	resetProgress()
 	fmt.Printf("\n%s[info]%s Downloading audio segments...\n", cyan, reset)
 	fmt.Print(hideCur)
 	handler.OnProgressFn = func(e m3u8dl.ProgressEvent) {
@@ -936,7 +909,6 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 	ffmpegPath string, autoSub, subOnly bool) {
 
 	startTime := time.Now()
-	resetProgress()
 
 	desc := streamToShortString(*selected)
 	var lastProgressTime time.Time

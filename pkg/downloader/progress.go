@@ -15,6 +15,9 @@ type ProgressTracker struct {
 	startTime     time.Time
 	mu            sync.Mutex
 	speedSamples  []speedSample
+	// For estimating total size from completed segments
+	estimatedTotal int64
+	sampleBytes    int64 // cumulative bytes from completed segments (for estimation)
 }
 
 type speedSample struct {
@@ -91,8 +94,21 @@ func (pt *ProgressTracker) Progress() Progress {
 		}
 	}
 
+	// If total not set, estimate from completed segments
+	if total <= 0 && done > 0 && downloaded > 0 {
+		avgSegSize := float64(downloaded) / float64(done)
+		total = int64(avgSegSize * float64(totalSeg))
+		pt.estimatedTotal = total
+	} else if total <= 0 && pt.estimatedTotal > 0 {
+		total = pt.estimatedTotal
+	}
+
 	if total > 0 {
+		p.Total = total
 		p.Percent = float64(downloaded) / float64(total) * 100
+		if p.Percent > 100 {
+			p.Percent = 100
+		}
 		if p.Speed > 0 {
 			remaining := float64(total-downloaded) / float64(p.Speed)
 			p.ETA = remaining
