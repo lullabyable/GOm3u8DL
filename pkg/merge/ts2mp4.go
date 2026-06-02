@@ -1207,22 +1207,24 @@ func buildAudioSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Samp
 	esdsPayload := buildESDS(aacConfig)
 	esdsBoxSize := 8 + len(esdsPayload)
 
-	// Audio Sample Entry (ISO 14496-12):
-	// 6 bytes: reserved
-	// 2 bytes: data_reference_index
-	// 8 bytes: reserved
-	// 2 bytes: channel_count
-	// 2 bytes: sample_size
-	// 4 bytes: pre-defined
-	// 4 bytes: sample_rate (16.16 fixed point)
-	// + esds box
-	entrySize := 36 + esdsBoxSize
+	// Audio Sample Entry layout (ISO 14496-12):
+	// [0:4]   size
+	// [4:8]   type "mp4a"
+	// [8:10]  reserved (6 bytes at [8:14])
+	// [10:12] data_reference_index
+	// [12:20] reserved (8 bytes)
+	// [20:22] channel_count
+	// [22:24] sample_size
+	// [24:28] pre_defined + reserved
+	// [28:32] sample_rate (16.16 fixed point)
+	// [32:]   esds box
+	entrySize := 32 + esdsBoxSize
 	entry := make([]byte, entrySize)
 	binary.BigEndian.PutUint32(entry[0:4], uint32(entrySize))
 	copy(entry[4:8], "mp4a")
 	binary.BigEndian.PutUint16(entry[10:12], 1) // data_reference_index
-	binary.BigEndian.PutUint16(entry[16:18], 2) // channel_count (stereo)
-	binary.BigEndian.PutUint16(entry[18:20], 16) // sample_size
+	binary.BigEndian.PutUint16(entry[20:22], 2) // channel_count (stereo)
+	binary.BigEndian.PutUint16(entry[22:24], 16) // sample_size
 
 	// Detect sample rate from AudioSpecificConfig
 	sampleRate := uint32(44100)
@@ -1233,31 +1235,32 @@ func buildAudioSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Samp
 			sampleRate = srTable[srIndex]
 		}
 	}
-	binary.BigEndian.PutUint32(entry[24:28], sampleRate<<16) // 16.16 fixed point
+	binary.BigEndian.PutUint32(entry[28:32], sampleRate<<16) // 16.16 fixed point
 
-	// Write esds box at offset 36
-	binary.BigEndian.PutUint32(entry[36:40], uint32(esdsBoxSize))
-	copy(entry[40:44], "esds")
-	copy(entry[44:], esdsPayload)
+	// Write esds box at offset 32
+	binary.BigEndian.PutUint32(entry[32:36], uint32(esdsBoxSize))
+	copy(entry[36:40], "esds")
+	copy(entry[40:], esdsPayload)
 
 	return entry
 }
 
 // buildESDS builds an Elementary Stream Descriptor box payload.
 func buildESDS(audioSpecificConfig []byte) []byte {
-	// esds structure:
-	// version(1) + flags(3) + ES_Descriptor
 	ascLen := len(audioSpecificConfig)
-	// ES_Descriptor tag=3, length varies
-	esDescLen := 3 + 5 + (13 + 5 + ascLen) // ES_ID(2) + flags(1) + DecoderConfigDesc + SLConfigDesc
-	// DecoderConfigDescriptor tag=4
-	decConfigLen := 13 + 5 + ascLen // objectType(1) + ... + DecoderSpecificInfo
-	// DecoderSpecificInfo tag=5
-	decSpecificLen := ascLen
-	// SLConfigDescriptor tag=6
-	slConfigLen := 1
 
-	totalLen := 4 + 2 + esDescLen // version+flags + tag+len + payload
+	// Descriptor sizes (each includes 1 byte tag + 1 byte length + payload):
+	// DecoderSpecificInfo (tag=5): 1+1+ascLen
+	decSpecificSize := 2 + ascLen
+	// DecoderConfigDescriptor (tag=4): 1+1 + 13 bytes content + DecoderSpecificInfo
+	decConfigSize := 2 + 13 + decSpecificSize
+	// SLConfigDescriptor (tag=6): 1+1+1
+	slConfigSize := 2 + 1
+	// ES_Descriptor (tag=3): 1+1 + 3 bytes content + DecoderConfigDescriptor + SLConfigDescriptor
+	esDescSize := 2 + 3 + decConfigSize + slConfigSize
+
+	// esds box: 4 (version+flags) + ES_Descriptor
+	totalLen := 4 + esDescSize
 	buf := make([]byte, totalLen)
 	p := 0
 
@@ -1269,7 +1272,7 @@ func buildESDS(audioSpecificConfig []byte) []byte {
 
 	// ES_Descriptor (tag=3)
 	buf[p] = 0x03; p++
-	buf[p] = byte(esDescLen); p++
+	buf[p] = byte(esDescSize - 2); p++ // length excludes tag+len
 	// ES_ID = 1
 	buf[p] = 0x00; p++
 	buf[p] = 0x01; p++
@@ -1278,7 +1281,7 @@ func buildESDS(audioSpecificConfig []byte) []byte {
 
 	// DecoderConfigDescriptor (tag=4)
 	buf[p] = 0x04; p++
-	buf[p] = byte(decConfigLen); p++
+	buf[p] = byte(decConfigSize - 2); p++ // length excludes tag+len
 	buf[p] = 0x40; p++ // objectTypeIndication = 0x40 (Audio ISO 14496-3)
 	buf[p] = 0x15; p++ // streamType=5 (Audio), upstream=0, reserved=1
 	// bufferSizeDB (3 bytes)
@@ -1287,7 +1290,7 @@ func buildESDS(audioSpecificConfig []byte) []byte {
 	buf[p] = 0x00; p++
 	// maxBitrate
 	buf[p] = 0x00; p++
-	buf[p] = 0x01; p++ // ~65536 bps (rough estimate)
+	buf[p] = 0x01; p++ // ~65536 bps
 	buf[p] = 0x00; p++
 	buf[p] = 0x00; p++
 	// avgBitrate
@@ -1298,13 +1301,13 @@ func buildESDS(audioSpecificConfig []byte) []byte {
 
 	// DecoderSpecificInfo (tag=5)
 	buf[p] = 0x05; p++
-	buf[p] = byte(decSpecificLen); p++
+	buf[p] = byte(ascLen); p++ // length = ASC data length
 	copy(buf[p:], audioSpecificConfig)
 	p += ascLen
 
 	// SLConfigDescriptor (tag=6)
 	buf[p] = 0x06; p++
-	buf[p] = byte(slConfigLen); p++
+	buf[p] = 0x01; p++ // length = 1
 	buf[p] = 0x02; p++ // predefined (MP4)
 
 	return buf[:p]
