@@ -127,9 +127,9 @@ func TestParsePTS90000(t *testing.T) {
 	// Bits: 000000000000000101011111100100000 (33 bits)
 	// Split: [32:30]=000 [29:15]=000000000010101 [14:0]=111110010000000
 	data := []byte{
-		0x21,                   // 0010 + PTS[32:30]=000 + marker=1
-		0x00,                   // PTS[29:22]=00000000
-		0x01 | 0x5D,           // PTS[21:15]=0000101 + marker=1 → 0x5D  wait...
+		0x21,        // 0010 + PTS[32:30]=000 + marker=1
+		0x00,        // PTS[29:22]=00000000
+		0x01 | 0x5D, // PTS[21:15]=0000101 + marker=1 → 0x5D  wait...
 		0x20, 0x01,
 	}
 	_ = data
@@ -155,17 +155,101 @@ func TestIsKeyFrameVideo(t *testing.T) {
 		t.Error("expected keyframe for IDR NAL")
 	}
 
+	// AVCC length-prefixed H.264 IDR NAL.
+	avcc := []byte{0x00, 0x00, 0x00, 0x03, 0x65, 0x88, 0x84}
+	if !isKeyFrame(avcc, true) {
+		t.Error("expected keyframe for AVCC IDR NAL")
+	}
+
 	// Non-IDR slice (type 1): 00 00 00 01 21
 	data2 := []byte{0x00, 0x00, 0x00, 0x01, 0x21, 0x00, 0x00}
-	// This is not a keyframe, but our implementation returns true as fallback
-	// when no keyframe is detected
-	_ = data2
+	if isKeyFrame(data2, true) {
+		t.Error("non-IDR NAL should not be marked as keyframe")
+	}
 }
 
 func TestIsKeyFrameAudio(t *testing.T) {
 	data := []byte{0xFF, 0xF1, 0x50}
 	if !isKeyFrame(data, false) {
 		t.Error("audio frames should always be keyframes")
+	}
+}
+
+func TestAnnexBToAVCC(t *testing.T) {
+	annexB := []byte{
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1f,
+		0x00, 0x00, 0x01, 0x68, 0xee, 0x3c,
+	}
+	avcc := annexBToAVCC(annexB)
+	if bytes.Contains(avcc, []byte{0x00, 0x00, 0x01}) {
+		t.Fatalf("AVCC sample still contains Annex-B start code: %x", avcc)
+	}
+	if got := binary.BigEndian.Uint32(avcc[0:4]); got != 4 {
+		t.Fatalf("first NAL length = %d, want 4", got)
+	}
+	if avcc[4] != 0x67 {
+		t.Fatalf("first NAL starts with 0x%02x, want SPS 0x67", avcc[4])
+	}
+}
+
+func TestExtractHEVCParameterSets(t *testing.T) {
+	vps := []byte{0x40, 0x01, 0x0c}
+	sps := []byte{0x42, 0x01, 0x01}
+	pps := []byte{0x44, 0x01, 0xc0}
+	annexB := append([]byte{0, 0, 0, 1}, vps...)
+	annexB = append(annexB, []byte{0, 0, 1}...)
+	annexB = append(annexB, sps...)
+	annexB = append(annexB, []byte{0, 0, 1}...)
+	annexB = append(annexB, pps...)
+
+	gotVPS, gotSPS, gotPPS := extractHEVCParameterSets(annexB)
+	if !bytes.Equal(gotVPS, vps) || !bytes.Equal(gotSPS, sps) || !bytes.Equal(gotPPS, pps) {
+		t.Fatalf("HEVC parameter sets = %x/%x/%x, want %x/%x/%x", gotVPS, gotSPS, gotPPS, vps, sps, pps)
+	}
+
+	avcc := annexBToAVCC(annexB)
+	gotVPS, gotSPS, gotPPS = extractHEVCParameterSets(avcc)
+	if !bytes.Equal(gotVPS, vps) || !bytes.Equal(gotSPS, sps) || !bytes.Equal(gotPPS, pps) {
+		t.Fatalf("AVCC HEVC parameter sets = %x/%x/%x, want %x/%x/%x", gotVPS, gotSPS, gotPPS, vps, sps, pps)
+	}
+}
+
+func TestBuildHEVCConfigRecord(t *testing.T) {
+	vps := []byte{0x40, 0x01, 0x0c}
+	sps := []byte{0x42, 0x01, 0x01}
+	pps := []byte{0x44, 0x01, 0xc0}
+	hvcC := buildHEVCConfigRecord(vps, sps, pps)
+	if len(hvcC) < 23 {
+		t.Fatalf("hvcC too small: %d", len(hvcC))
+	}
+	if hvcC[0] != 1 {
+		t.Fatalf("configurationVersion = %d, want 1", hvcC[0])
+	}
+	if hvcC[21]&0x03 != 0x03 {
+		t.Fatalf("lengthSizeMinusOne bits = 0x%x, want 3", hvcC[21]&0x03)
+	}
+	if hvcC[22] != 3 {
+		t.Fatalf("numOfArrays = %d, want 3", hvcC[22])
+	}
+	if hvcC[23]&0x3f != 32 {
+		t.Fatalf("first array NAL type = %d, want VPS type 32", hvcC[23]&0x3f)
+	}
+}
+
+func TestExtractAACSamplesFromADTSStripsHeaders(t *testing.T) {
+	frame := buildADTSFrame([]byte{0x11, 0x22, 0x33, 0x44})
+	samples, cfg := extractAACSamplesFromADTS(frame, 90000, 90000)
+	if len(samples) != 1 {
+		t.Fatalf("samples = %d, want 1", len(samples))
+	}
+	if len(cfg) != 2 {
+		t.Fatalf("AudioSpecificConfig length = %d, want 2", len(cfg))
+	}
+	if !bytes.Equal(samples[0].data, []byte{0x11, 0x22, 0x33, 0x44}) {
+		t.Fatalf("sample data = %x, want raw AAC payload", samples[0].data)
+	}
+	if bytes.HasPrefix(samples[0].data, []byte{0xff, 0xf1}) {
+		t.Fatal("sample data still contains ADTS header")
 	}
 }
 
@@ -211,16 +295,121 @@ func TestWriteFtypBox(t *testing.T) {
 
 func TestBuildMvhd(t *testing.T) {
 	mvhd := buildMvhd(90000)
-	if len(mvhd) != 108 {
-		t.Fatalf("mvhd length = %d, want 108", len(mvhd))
+	if len(mvhd) != 100 {
+		t.Fatalf("mvhd length = %d, want 100", len(mvhd))
 	}
 	ts := binary.BigEndian.Uint32(mvhd[12:16])
 	if ts != 90000 {
 		t.Errorf("timescale = %d, want 90000", ts)
 	}
-	nextTrackID := binary.BigEndian.Uint32(mvhd[104:108])
+	nextTrackID := binary.BigEndian.Uint32(mvhd[96:100])
 	if nextTrackID != 3 {
 		t.Errorf("next_track_id = %d, want 3", nextTrackID)
+	}
+}
+
+func TestBuildMoovWritesMovieDuration(t *testing.T) {
+	cfg := &remuxConfig{videoCodec: "h264", audioCodec: "aac", timescale: 90000}
+	videoTrack := &trackInfo{width: 1920, height: 1080, avcConfig: buildAVCConfigRecord([]byte{0x67, 0x64, 0x00, 0x1f}, []byte{0x68, 0xee, 0x3c})}
+	samples := []mp4Sample{
+		{data: []byte{0, 0, 0, 1, 0x65}, pts: 90000, dts: 90000, duration: 45000, isKeyFrame: true},
+		{data: []byte{0, 0, 0, 1, 0x41}, pts: 135000, dts: 135000, duration: 45000},
+	}
+	moov := buildMoovBox(cfg, samples, nil, videoTrack, nil, 1, 0, buildMediaLayout(samples, nil, 1024))
+	mvhd := findTestBoxBody(moov, "mvhd")
+	if len(mvhd) < 20 {
+		t.Fatalf("mvhd not found or too small")
+	}
+	duration := binary.BigEndian.Uint32(mvhd[16:20])
+	if duration != 90000 {
+		t.Fatalf("movie duration = %d, want 90000", duration)
+	}
+}
+
+func TestWriteMP4OutputInterleavedMoreAudioThanVideo(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.mp4")
+	cfg := &remuxConfig{videoCodec: "h264", audioCodec: "aac", timescale: 90000}
+	videoTrack := &trackInfo{
+		width:     1920,
+		height:    818,
+		avcConfig: buildAVCConfigRecord([]byte{0x67, 0x4d, 0x40, 0x28}, []byte{0x68, 0xee, 0x3c}),
+	}
+	audioTrack := &trackInfo{aacConfig: []byte{0x12, 0x10}}
+	videoSamples := []mp4Sample{
+		{data: []byte{0, 0, 0, 1, 0x65}, pts: 0, dts: 0, duration: 90000, isKeyFrame: true},
+	}
+	audioSamples := []mp4Sample{
+		{data: []byte{0x11}, pts: 0, dts: 0, duration: 2048, isKeyFrame: true},
+		{data: []byte{0x22}, pts: 2048, dts: 2048, duration: 2048, isKeyFrame: true},
+		{data: []byte{0x33}, pts: 4096, dts: 4096, duration: 2048, isKeyFrame: true},
+	}
+
+	if err := writeMP4Output(out, cfg, videoSamples, audioSamples, videoTrack, audioTrack); err != nil {
+		t.Fatalf("writeMP4Output: %v", err)
+	}
+	if fi, err := os.Stat(out); err != nil || fi.Size() == 0 {
+		t.Fatalf("output missing or empty: size=%v err=%v", fi, err)
+	}
+}
+
+func TestBuildVideoSampleEntryLayout(t *testing.T) {
+	cfg := &remuxConfig{videoCodec: "h264", audioCodec: "aac", timescale: 90000}
+	track := &trackInfo{
+		width:     1920,
+		height:    818,
+		avcConfig: buildAVCConfigRecord([]byte{0x67, 0x4d, 0x40, 0x28}, []byte{0x68, 0xee, 0x3c}),
+	}
+	entry := buildVideoSampleEntry(cfg, track, nil)
+	if string(entry[4:8]) != "avc1" {
+		t.Fatalf("sample entry type = %q, want avc1", string(entry[4:8]))
+	}
+	if got := binary.BigEndian.Uint16(entry[14:16]); got != 1 {
+		t.Fatalf("data_reference_index = %d, want 1", got)
+	}
+	if got := binary.BigEndian.Uint16(entry[32:34]); got != 1920 {
+		t.Fatalf("width = %d, want 1920", got)
+	}
+	if got := binary.BigEndian.Uint16(entry[34:36]); got != 818 {
+		t.Fatalf("height = %d, want 818", got)
+	}
+	if got := binary.BigEndian.Uint16(entry[48:50]); got != 1 {
+		t.Fatalf("frame_count = %d, want 1", got)
+	}
+	if got := binary.BigEndian.Uint16(entry[82:84]); got != 0x18 {
+		t.Fatalf("depth = 0x%x, want 0x18", got)
+	}
+	if got := binary.BigEndian.Uint16(entry[84:86]); got != 0xffff {
+		t.Fatalf("pre_defined = 0x%x, want 0xffff", got)
+	}
+	if string(entry[90:94]) != "avcC" {
+		t.Fatalf("child box = %q, want avcC", string(entry[90:94]))
+	}
+}
+
+func TestBuildHEVCSampleEntryLayout(t *testing.T) {
+	cfg := &remuxConfig{videoCodec: "h265", audioCodec: "aac", timescale: 90000}
+	track := &trackInfo{
+		streamType: 0x24,
+		width:      1920,
+		height:     818,
+		hevcConfig: buildHEVCConfigRecord([]byte{0x40, 0x01}, []byte{0x42, 0x01}, []byte{0x44, 0x01}),
+	}
+	entry := buildVideoSampleEntry(cfg, track, nil)
+	if string(entry[4:8]) != "hev1" {
+		t.Fatalf("sample entry type = %q, want hev1", string(entry[4:8]))
+	}
+	if string(entry[90:94]) != "hvcC" {
+		t.Fatalf("child box = %q, want hvcC", string(entry[90:94]))
+	}
+	if got := binary.BigEndian.Uint16(entry[14:16]); got != 1 {
+		t.Fatalf("data_reference_index = %d, want 1", got)
+	}
+	if got := binary.BigEndian.Uint16(entry[32:34]); got != 1920 {
+		t.Fatalf("width = %d, want 1920", got)
+	}
+	if got := binary.BigEndian.Uint16(entry[34:36]); got != 818 {
+		t.Fatalf("height = %d, want 818", got)
 	}
 }
 
@@ -339,7 +528,7 @@ func TestBuildTkhd(t *testing.T) {
 	if len(tkhd) != 84 {
 		t.Fatalf("tkhd length = %d, want 84", len(tkhd))
 	}
-	trackID := binary.BigEndian.Uint32(tkhd[20:24])
+	trackID := binary.BigEndian.Uint32(tkhd[12:16])
 	if trackID != 1 {
 		t.Errorf("track_id = %d, want 1", trackID)
 	}
@@ -351,7 +540,7 @@ func TestBuildTkhd(t *testing.T) {
 
 func TestBuildTkhdAudio(t *testing.T) {
 	tkhd := buildTkhd(2, false)
-	trackID := binary.BigEndian.Uint32(tkhd[20:24])
+	trackID := binary.BigEndian.Uint32(tkhd[12:16])
 	if trackID != 2 {
 		t.Errorf("track_id = %d, want 2", trackID)
 	}
@@ -409,6 +598,14 @@ func TestTS2MP4RemuxMinimalTS(t *testing.T) {
 	if string(data[4:8]) != "ftyp" {
 		t.Errorf("first box = %q, want ftyp", string(data[4:8]))
 	}
+	mdatDataOffset := findTopLevelBoxDataOffset(data, "mdat")
+	firstStco := findFirstChunkOffset(data)
+	if mdatDataOffset == 0 {
+		t.Fatal("mdat box not found")
+	}
+	if firstStco != mdatDataOffset {
+		t.Fatalf("first stco offset = %d, want mdat data offset %d", firstStco, mdatDataOffset)
+	}
 }
 
 func TestTS2MP4RemuxWithOptions(t *testing.T) {
@@ -454,6 +651,19 @@ func TestTS2MP4RemuxMultipleFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TS2MP4Remux multiple: %v", err)
 	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	stcoCounts := findStcoEntryCounts(data)
+	if len(stcoCounts) < 2 {
+		t.Fatalf("stco tables = %d, want video and audio", len(stcoCounts))
+	}
+	for i, count := range stcoCounts {
+		if count < 2 {
+			t.Fatalf("stco[%d] entry count = %d, want multiple chunks", i, count)
+		}
+	}
 }
 
 // --- Helper: build minimal TS ---
@@ -471,17 +681,17 @@ func buildMinimalTS() []byte {
 	// pointer byte
 	pat[4] = 0x00
 	// PAT table starts at byte 5
-	pat[5] = 0x00 // table_id = 0 (PAT)
-	pat[6] = 0xB0 // section_syntax_indicator=1, '0', reserved=11
-	pat[7] = 0x0D // section_length = 13 (5 + 4 program + 4 CRC)
+	pat[5] = 0x00  // table_id = 0 (PAT)
+	pat[6] = 0xB0  // section_syntax_indicator=1, '0', reserved=11
+	pat[7] = 0x0D  // section_length = 13 (5 + 4 program + 4 CRC)
 	pat[8] = 0x00  // transport_stream_id high
 	pat[9] = 0x01  // transport_stream_id low
 	pat[10] = 0xC1 // reserved=11, version=0, current_next=1
 	pat[11] = 0x00 // section_number
 	pat[12] = 0x00 // last_section_number
 	// Program entry: program_number=1, PMT PID=4096
-	pat[13] = 0x00 // program_number high
-	pat[14] = 0x01 // program_number low
+	pat[13] = 0x00                 // program_number high
+	pat[14] = 0x01                 // program_number low
 	pat[15] = 0xE0 | byte(4096>>8) // reserved=111 + PID high
 	pat[16] = byte(4096 & 0xFF)    // PID low → PID=4096
 	// CRC32 (dummy, parsers typically don't verify)
@@ -496,34 +706,34 @@ func buildMinimalTS() []byte {
 	pmt[0] = 0x47
 	pmt[1] = 0x60 | byte(4096>>8) // payload_unit_start=1, PID high
 	pmt[2] = byte(4096 & 0xFF)    // PID low
-	pmt[3] = 0x10                  // adaptation_field_control=01, continuity=0
+	pmt[3] = 0x10                 // adaptation_field_control=01, continuity=0
 	// Payload starts at byte 4
 	pmt[4] = 0x00 // pointer
 	// PMT table starts at byte 5
-	pmt[5] = 0x02 // table_id = 2 (PMT)
-	pmt[6] = 0xB0 // section_syntax_indicator=1, reserved=11
-	pmt[7] = 0x17 // section_length = 23 (5+4+5+5+4 CRC)
-	pmt[8] = 0x00  // program_number high
-	pmt[9] = 0x01  // program_number low
-	pmt[10] = 0xC1 // reserved, version=0, current
-	pmt[11] = 0x00 // section_number
-	pmt[12] = 0x00 // last_section_number
+	pmt[5] = 0x02                 // table_id = 2 (PMT)
+	pmt[6] = 0xB0                 // section_syntax_indicator=1, reserved=11
+	pmt[7] = 0x17                 // section_length = 23 (5+4+5+5+4 CRC)
+	pmt[8] = 0x00                 // program_number high
+	pmt[9] = 0x01                 // program_number low
+	pmt[10] = 0xC1                // reserved, version=0, current
+	pmt[11] = 0x00                // section_number
+	pmt[12] = 0x00                // last_section_number
 	pmt[13] = 0xE0 | byte(256>>8) // reserved + PCR_PID high (256)
 	pmt[14] = byte(256 & 0xFF)    // PCR_PID low
-	pmt[15] = 0xF0 // reserved
-	pmt[16] = 0x00 // program_info_length = 0
+	pmt[15] = 0xF0                // reserved
+	pmt[16] = 0x00                // program_info_length = 0
 	// Video stream: type=0x1b (H.264), PID=256
-	pmt[17] = 0x1b                   // stream_type = H.264
-	pmt[18] = byte(256 >> 8)         // PID high
-	pmt[19] = byte(256 & 0xFF)       // PID low
-	pmt[20] = 0xF0                   // reserved
-	pmt[21] = 0x00                   // ES_info_length = 0
+	pmt[17] = 0x1b             // stream_type = H.264
+	pmt[18] = byte(256 >> 8)   // PID high
+	pmt[19] = byte(256 & 0xFF) // PID low
+	pmt[20] = 0xF0             // reserved
+	pmt[21] = 0x00             // ES_info_length = 0
 	// Audio stream: type=0x0f (AAC), PID=257
-	pmt[22] = 0x0f                   // stream_type = AAC
-	pmt[23] = byte(257 >> 8)         // PID high
-	pmt[24] = byte(257 & 0xFF)       // PID low
-	pmt[25] = 0xF0                   // reserved
-	pmt[26] = 0x00                   // ES_info_length = 0
+	pmt[22] = 0x0f             // stream_type = AAC
+	pmt[23] = byte(257 >> 8)   // PID high
+	pmt[24] = byte(257 & 0xFF) // PID low
+	pmt[25] = 0xF0             // reserved
+	pmt[26] = 0x00             // ES_info_length = 0
 	// CRC32 (dummy)
 	pmt[27] = 0x00
 	pmt[28] = 0x00
@@ -536,14 +746,14 @@ func buildMinimalTS() []byte {
 	pes[0] = 0x47
 	pes[1] = 0x40 | byte(256>>8) // payload_unit_start=1, PID high
 	pes[2] = byte(256 & 0xFF)    // PID low
-	pes[3] = 0x10                 // adaptation_field_control=01, continuity=0
+	pes[3] = 0x10                // adaptation_field_control=01, continuity=0
 	// PES header starts at byte 4
 	pes[4] = 0x00
 	pes[5] = 0x00
 	pes[6] = 0x01
 	pes[7] = 0xE0 // stream_id = video stream 0
 	pes[8] = 0x00
-	pes[9] = 0x00 // PES_packet_length = 0 (unbounded)
+	pes[9] = 0x00  // PES_packet_length = 0 (unbounded)
 	pes[10] = 0x84 // '10' + scrambling=00 + priority=0 + alignment=0 + copyright=0 + original=0
 	pes[11] = 0x00 // PTS_DTS_flags=00 + ESCR=0 + ES_rate=0 + ...
 	pes[12] = 0x05 // PES_header_data_length = 5
@@ -589,6 +799,75 @@ func buildMinimalTS() []byte {
 	buf.Write(audio)
 
 	return buf.Bytes()
+}
+
+func buildADTSFrame(payload []byte) []byte {
+	frameLen := 7 + len(payload)
+	frame := make([]byte, frameLen)
+	frame[0] = 0xff
+	frame[1] = 0xf1
+	frame[2] = 0x50 // AAC-LC, 44100 Hz
+	frame[3] = 0x80 | byte((frameLen>>11)&0x03)
+	frame[4] = byte((frameLen >> 3) & 0xff)
+	frame[5] = byte((frameLen&0x07)<<5) | 0x1f
+	frame[6] = 0xfc
+	copy(frame[7:], payload)
+	return frame
+}
+
+func findTestBoxBody(data []byte, boxType string) []byte {
+	for offset := 0; offset+8 <= len(data); {
+		size := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		if size < 8 || offset+size > len(data) {
+			return nil
+		}
+		if string(data[offset+4:offset+8]) == boxType {
+			return data[offset+8 : offset+size]
+		}
+		offset += size
+	}
+	return nil
+}
+
+func findTopLevelBoxDataOffset(data []byte, boxType string) uint32 {
+	for offset := 0; offset+8 <= len(data); {
+		size := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		if size < 8 || offset+size > len(data) {
+			return 0
+		}
+		if string(data[offset+4:offset+8]) == boxType {
+			return uint32(offset + 8)
+		}
+		offset += size
+	}
+	return 0
+}
+
+func findFirstChunkOffset(data []byte) uint32 {
+	idx := bytes.Index(data, []byte("stco"))
+	if idx < 4 || idx+16 > len(data) {
+		return 0
+	}
+	entryCount := binary.BigEndian.Uint32(data[idx+8 : idx+12])
+	if entryCount == 0 {
+		return 0
+	}
+	return binary.BigEndian.Uint32(data[idx+12 : idx+16])
+}
+
+func findStcoEntryCounts(data []byte) []uint32 {
+	var counts []uint32
+	for offset := 0; ; {
+		idx := bytes.Index(data[offset:], []byte("stco"))
+		if idx < 0 {
+			return counts
+		}
+		idx += offset
+		if idx >= 4 && idx+12 <= len(data) {
+			counts = append(counts, binary.BigEndian.Uint32(data[idx+8:idx+12]))
+		}
+		offset = idx + 4
+	}
 }
 
 // --- FMP4 Merge Tests ---

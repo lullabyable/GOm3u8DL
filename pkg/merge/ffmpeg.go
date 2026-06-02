@@ -16,9 +16,7 @@ func FFmpegMerge(segmentPaths []string, outputPath string, ffmpegPath string) er
 		return fmt.Errorf("no files to merge")
 	}
 
-	if ffmpegPath == "" {
-		ffmpegPath = "ffmpeg"
-	}
+	ffmpegPath = resolveFFmpegPath(ffmpegPath)
 
 	// Verify ffmpeg is available
 	if _, err := exec.LookPath(ffmpegPath); err != nil {
@@ -81,9 +79,7 @@ func MuxToMP4(inputPath string, outputPath string, ffmpegPath string) error {
 		return fmt.Errorf("input path is empty")
 	}
 
-	if ffmpegPath == "" {
-		ffmpegPath = "ffmpeg"
-	}
+	ffmpegPath = resolveFFmpegPath(ffmpegPath)
 
 	if _, err := exec.LookPath(ffmpegPath); err != nil {
 		return fmt.Errorf("ffmpeg not found: %w", err)
@@ -117,9 +113,7 @@ func FFmpegMuxAV(videoPath, audioPath, outputPath, ffmpegPath string) error {
 		return fmt.Errorf("video/audio path is empty")
 	}
 
-	if ffmpegPath == "" {
-		ffmpegPath = "ffmpeg"
-	}
+	ffmpegPath = resolveFFmpegPath(ffmpegPath)
 
 	if _, err := exec.LookPath(ffmpegPath); err != nil {
 		return fmt.Errorf("ffmpeg not found: %w", err)
@@ -146,4 +140,19 @@ func FFmpegMuxAV(videoPath, audioPath, outputPath, ffmpegPath string) error {
 	}
 
 	return nil
+}
+
+func resolveFFmpegPath(ffmpegPath string) string {
+	if ffmpegPath == "" {
+		return "ffmpeg"
+	}
+	if info, err := os.Stat(ffmpegPath); err == nil && info.IsDir() {
+		for _, name := range []string{"ffmpeg.exe", "ffmpeg"} {
+			candidate := filepath.Join(ffmpegPath, name)
+			if candidateInfo, err := os.Stat(candidate); err == nil && !candidateInfo.IsDir() {
+				return candidate
+			}
+		}
+	}
+	return ffmpegPath
 }
