@@ -61,7 +61,7 @@ func clearLine() {
 	procSetConsoleCursorPosition.Call(uintptr(handle), uintptr(*(*int32)(unsafe.Pointer(&startPos))))
 	// Fill the line with spaces
 	var written uint32
-	lineWidth := uint32(info.Size.X)
+	lineWidth := uintptr(info.Size.X)
 	procFillConsoleOutputCharacter.Call(uintptr(handle), uintptr(' '), lineWidth, uintptr(*(*int32)(unsafe.Pointer(&startPos))), uintptr(unsafe.Pointer(&written)))
 	// Move cursor back to start
 	procSetConsoleCursorPosition.Call(uintptr(handle), uintptr(*(*int32)(unsafe.Pointer(&startPos))))
