@@ -18,8 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/lullabyable/GOm3u8DL/pkg/merge"
 	"github.com/lullabyable/GOm3u8DL/pkg/m3u8dl"
+	"github.com/lullabyable/GOm3u8DL/pkg/merge"
 	"github.com/lullabyable/GOm3u8DL/pkg/model"
 )
 
@@ -67,21 +67,23 @@ func main() {
 	enableWindowsVT()
 
 	var (
-		url         string
-		outputDir   string
-		tmpDir      string
-		saveName    string
-		concurrency int
-		maxSpeed    int64
-		mergeMode   string
-		ffmpegDir   string
-		headers     stringSlice
-		keys        stringSlice
-		autoSub     bool
-		subOnly     bool
-		showVersion bool
-		svSelect    string
+		url          string
+		outputDir    string
+		tmpDir       string
+		saveName     string
+		concurrency  int
+		maxSpeed     int64
+		mergeMode    string
+		ffmpegDir    string
+		headers      stringSlice
+		keys         stringSlice
+		autoSub      bool
+		subOnly      bool
+		delAfterDone bool
+		showVersion  bool
+		svSelect     string
 	)
+	delAfterDone = true
 
 	flag.StringVar(&url, "url", "", "M3U8/MPD/ISM URL (required)")
 	flag.StringVar(&outputDir, "save-dir", "./downloads", "Output directory")
@@ -93,6 +95,7 @@ func main() {
 	flag.StringVar(&ffmpegDir, "ffmpeg-dir", "", "Path to ffmpeg binary or directory")
 	flag.Var(&headers, "H", "HTTP header (repeatable, format: Key: Value)")
 	flag.Var(&keys, "key", "Decryption key in kid:key hex format (repeatable)")
+	flag.BoolVar(&delAfterDone, "del-after-done", true, "Delete temp segments after successful merge")
 	flag.BoolVar(&autoSub, "auto-subtitle-fix", false, "自动修复字幕时间轴")
 	flag.BoolVar(&subOnly, "sub-only", false, "仅下载字幕")
 	flag.BoolVar(&showVersion, "version", false, "Show version")
@@ -108,6 +111,12 @@ func main() {
 		newArgs = append(newArgs, args[1:]...)
 		os.Args = append([]string{os.Args[0]}, newArgs...)
 	}
+	os.Args = append([]string{os.Args[0]}, normalizeBoolFlagArgs(os.Args[1:], map[string]bool{
+		"-auto-subtitle-fix": true,
+		"-sub-only":          true,
+		"-version":           true,
+		"-del-after-done":    true,
+	})...)
 
 	flag.Parse()
 
@@ -126,7 +135,7 @@ func main() {
 
 	// ── Interactive mode (one-shot) ─────────────────────────────────
 	if url == "" && !hasStdinPiped() {
-		url, outputDir, tmpDir, saveName, concurrency, maxSpeed, mergeMode, ffmpegDir, headers, keys, autoSub, subOnly, svSelect = interactiveMode()
+		url, outputDir, tmpDir, saveName, concurrency, maxSpeed, mergeMode, ffmpegDir, headers, keys, autoSub, subOnly, delAfterDone, svSelect = interactiveMode()
 		if url == "" {
 			fmt.Fprintf(os.Stderr, "%s错误: 必须提供 URL%s\n", red, reset)
 			os.Exit(1)
@@ -171,6 +180,9 @@ func main() {
 			}
 			if !cliFlags["tmp-dir"] && cfg.TmpDir != "" {
 				tmpDir = cfg.TmpDir
+			}
+			if !cliFlags["del-after-done"] && cfg.DelAfterDone {
+				delAfterDone = cfg.DelAfterDone
 			}
 			// Merge headers: config provides base, CLI overrides same keys.
 			// Always merge (not gated on len(cfg.Headers)) so CLI headers
@@ -272,7 +284,7 @@ func main() {
 
 	if hasSeparateAV {
 		downloadSeparateStreams(ctx, engine, url, videoStreams, audioStreams,
-			svSelect, outputDir, tmpDir, saveName, headerMap, concurrency, maxSpeed, mode, ffmpegPath, autoSub, subOnly)
+			svSelect, outputDir, tmpDir, saveName, headerMap, concurrency, maxSpeed, mode, ffmpegPath, autoSub, subOnly, delAfterDone)
 	} else {
 		var selected *model.StreamInfo
 		if svSelect != "" {
@@ -289,7 +301,7 @@ func main() {
 
 		fmt.Printf("\n%s[info]%s 已选择: %s\n", cyan, reset, streamToShortString(*selected))
 		downloadSingleStream(ctx, engine, url, selected, outputDir, tmpDir, saveName,
-			headerMap, concurrency, maxSpeed, mode, ffmpegPath, autoSub, subOnly)
+			headerMap, concurrency, maxSpeed, mode, ffmpegPath, autoSub, subOnly, delAfterDone)
 	}
 }
 
@@ -303,13 +315,31 @@ func hasStdinPiped() bool {
 	return fi.Mode()&os.ModeCharDevice == 0
 }
 
+func normalizeBoolFlagArgs(args []string, boolFlags map[string]bool) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		out = append(out, arg)
+		if !boolFlags[arg] || i+1 >= len(args) {
+			continue
+		}
+		next := strings.ToLower(args[i+1])
+		if next == "true" || next == "false" {
+			out[len(out)-1] = arg + "=" + next
+			i++
+		}
+	}
+	return out
+}
+
 // interactiveMode provides a one-shot input experience.
 // The user enters everything in a single line, or presses Enter for a guided one-line prompt.
 func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int, maxSpeed int64,
-	mergeMode string, ffmpegDir string, headers stringSlice, keys stringSlice, autoSub, subOnly bool, svSelect string) {
+	mergeMode string, ffmpegDir string, headers stringSlice, keys stringSlice, autoSub, subOnly bool, delAfterDone bool, svSelect string) {
 
 	reader := bufio.NewReader(os.Stdin)
 	mergeMode = "ts2mp4"
+	delAfterDone = true
 
 	fmt.Printf("\n")
 	fmt.Printf("  %s%sGOm3u8DL%s — 流媒体下载器\n", cyan, bold, reset)
@@ -350,7 +380,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 				// It's a flag, collect it and its value (if any)
 				remaining = append(remaining, args[i])
 				// Boolean flags don't have values
-				if args[i] == "-auto-subtitle-fix" || args[i] == "-sub-only" || args[i] == "-version" {
+				if args[i] == "-auto-subtitle-fix" || args[i] == "-sub-only" || args[i] == "-version" || args[i] == "-del-after-done" {
 					continue
 				}
 				// Next arg might be the value
@@ -386,7 +416,14 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 		fs.Var(&keys, "key", "")
 		fs.BoolVar(&autoSub, "auto-subtitle-fix", false, "")
 		fs.BoolVar(&subOnly, "sub-only", false, "")
+		fs.BoolVar(&delAfterDone, "del-after-done", true, "")
 		fs.StringVar(&svSelect, "sv", "", "")
+		remaining = normalizeBoolFlagArgs(remaining, map[string]bool{
+			"-auto-subtitle-fix": true,
+			"-sub-only":          true,
+			"-version":           true,
+			"-del-after-done":    true,
+		})
 
 		if err := fs.Parse(remaining); err != nil {
 			fmt.Printf("    %s⚠ 解析错误: %v%s\n\n", red, reset, err)
@@ -616,13 +653,19 @@ func alreadySelectedLang(all []indexedStream, lang string) bool {
 //
 //	task description  ██████████████████░░░░░░░░░  128/187  68.45%  156.22MB/228.55MB  12.45MBps  00m05s  ⠹
 func renderProgress(desc string, e m3u8dl.ProgressEvent) {
-	// Progress bar
-	barW := 25
-	filled := int(e.Percent / 100 * float64(barW))
-	if filled > barW {
-		filled = barW
+	width := terminalWidth() - 1
+	if width < 50 {
+		width = 50
 	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barW-filled)
+
+	// Progress bar
+	descW := 40
+	barW := 25
+	compact := width < 110
+	if compact {
+		descW = 22
+		barW = 12
+	}
 
 	// Stats
 	doneTotal := fmt.Sprintf("%d/%d", e.SegmentsDone, e.Segments)
@@ -632,17 +675,27 @@ func renderProgress(desc string, e m3u8dl.ProgressEvent) {
 	etaStr := formatTime(int(e.ETA))
 	spin := nextSpinner()
 
-	// Compose the line — match original N_m3u8DL-RE column layout:
-	// [description] [bar] done/total percent  size  speed  eta  spinner
-	line := fmt.Sprintf("  %-40s %s  %s %s  %-18s  %s%-11s%s  %s%-8s%s  %s",
-		truncateDesc(desc, 40),
-		bar,
-		doneTotal,
-		pctStr,
-		sizeStr,
-		green, speedStr, reset,
-		yellow, etaStr, reset,
-		spin)
+	line := buildProgressLine(desc, descW, barW, compact, e.Percent, doneTotal, pctStr, sizeStr, speedStr, etaStr, spin)
+	if runtime.GOOS == "windows" && !supportsANSIColor() {
+		line = stripANSI(line)
+	}
+	for visibleLen(line) > width && descW > 8 {
+		descW--
+		line = buildProgressLine(desc, descW, barW, compact, e.Percent, doneTotal, pctStr, sizeStr, speedStr, etaStr, spin)
+		if runtime.GOOS == "windows" && !supportsANSIColor() {
+			line = stripANSI(line)
+		}
+	}
+	for visibleLen(line) > width && barW > 8 {
+		barW--
+		line = buildProgressLine(desc, descW, barW, compact, e.Percent, doneTotal, pctStr, sizeStr, speedStr, etaStr, spin)
+		if runtime.GOOS == "windows" && !supportsANSIColor() {
+			line = stripANSI(line)
+		}
+	}
+	if visibleLen(line) > width {
+		line = truncateDesc(stripANSI(line), width)
+	}
 
 	// Use \r to overwrite the same line (no trailing newline)
 	if runtime.GOOS == "windows" {
@@ -655,20 +708,39 @@ func renderProgress(desc string, e m3u8dl.ProgressEvent) {
 
 // renderProgressDone shows the final completed state (bar fully filled, green).
 func renderProgressDone(desc string, e m3u8dl.ProgressEvent) {
+	width := terminalWidth() - 1
+	if width < 50 {
+		width = 50
+	}
+	descW := 40
 	barW := 25
-	bar := strings.Repeat("█", barW)
+	compact := width < 110
+	if compact {
+		descW = 22
+		barW = 12
+	}
+	bar := strings.Repeat("=", barW)
 	doneTotal := fmt.Sprintf("%d/%d", e.Segments, e.Segments)
 	pctStr := fmt.Sprintf("%6.2f%%", 100.0)
 	sizeStr := formatFileSize(float64(e.Total))
 
-	line := fmt.Sprintf("  %-40s %s%s%s  %s %s  %-18s  %s  %s",
-		truncateDesc(desc, 40),
-		green, bar, reset,
-		doneTotal,
-		pctStr,
-		sizeStr,
-		"完成!",
-		"✓")
+	line := fmt.Sprintf("  %-*s %s%s%s  %s %s  %s  %s",
+		descW, truncateDesc(desc, descW), green, bar, reset, doneTotal, pctStr, sizeStr, "完成!")
+	if compact {
+		line = fmt.Sprintf("  %-*s %s %s %s %s",
+			descW, truncateDesc(desc, descW), bar, doneTotal, pctStr, "完成!")
+	}
+	if runtime.GOOS == "windows" && !supportsANSIColor() {
+		line = stripANSI(line)
+	}
+	for visibleLen(line) > width && descW > 8 {
+		descW--
+		line = fmt.Sprintf("  %-*s %s %s %s %s",
+			descW, truncateDesc(desc, descW), bar, doneTotal, pctStr, "完成!")
+	}
+	if visibleLen(line) > width {
+		line = truncateDesc(stripANSI(line), width)
+	}
 
 	// Overwrite current line then print newline to commit
 	if runtime.GOOS == "windows" {
@@ -688,7 +760,42 @@ func clearProgress() {
 	}
 }
 
+func buildProgressLine(desc string, descW, barW int, compact bool, percent float64, doneTotal, pctStr, sizeStr, speedStr, etaStr, spin string) string {
+	filled := int(percent / 100 * float64(barW))
+	if filled > barW {
+		filled = barW
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	bar := strings.Repeat("=", filled) + strings.Repeat("-", barW-filled)
+	if compact {
+		return fmt.Sprintf("  %-*s %s %s %s %s %s%s%s %s%s%s %s",
+			descW,
+			truncateDesc(desc, descW),
+			bar,
+			doneTotal,
+			pctStr,
+			sizeStr,
+			green, speedStr, reset,
+			yellow, etaStr, reset,
+			spin)
+	}
+	return fmt.Sprintf("  %-*s %s  %s %s  %-18s  %s%-11s%s  %s%-8s%s  %s",
+		descW,
+		truncateDesc(desc, descW),
+		bar,
+		doneTotal,
+		pctStr,
+		sizeStr,
+		green, speedStr, reset,
+		yellow, etaStr, reset,
+		spin)
+}
 
+func visibleLen(s string) int {
+	return utf8.RuneCountInString(stripANSI(s))
+}
 
 func truncateDesc(s string, max int) string {
 	if utf8.RuneCountInString(s) <= max {
@@ -770,7 +877,7 @@ func formatDuration(seconds float64) string {
 func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url string,
 	videoStreams, audioStreams []model.StreamInfo, svSelect, outputDir, tmpDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
-	ffmpegPath string, autoSub, subOnly bool) {
+	ffmpegPath string, autoSub, subOnly bool, delAfterDone bool) {
 
 	// Select video
 	var selectedVideo *model.StreamInfo
@@ -937,8 +1044,9 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		}
 	}
 
-	// Clean up entire rootTmp (video_tmp + audio_tmp + any temp files)
-	os.RemoveAll(rootTmp)
+	if delAfterDone {
+		os.RemoveAll(rootTmp)
+	}
 
 	if muxErr != nil {
 		fmt.Fprintf(os.Stderr, "%s[error]%s 混流失败: %v\n", red, reset, muxErr)
@@ -951,7 +1059,7 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string,
 	selected *model.StreamInfo, outputDir, tmpDir, saveName string,
 	headerMap map[string]string, concurrency int, maxSpeed int64, mode model.MergeMode,
-	ffmpegPath string, autoSub, subOnly bool) {
+	ffmpegPath string, autoSub, subOnly bool, delAfterDone bool) {
 
 	startTime := time.Now()
 
@@ -972,7 +1080,7 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 		FFmpegPath:         ffmpegPath,
 		AutoSubtitleFix:    autoSub,
 		SubOnly:            subOnly,
-		DelAfterDone:       true,
+		DelAfterDone:       delAfterDone,
 	}
 
 	handler := m3u8dl.EventHandlerFunc{
@@ -1354,16 +1462,10 @@ func (s *stringSlice) Set(v string) error {
 func findFFmpeg(userPath string) string {
 	// 1. User-specified path
 	if userPath != "" {
-		if _, err := os.Stat(userPath); err == nil {
+		if info, err := os.Stat(userPath); err == nil && !info.IsDir() {
 			return userPath
 		}
-		// Maybe it's a directory
-		candidate := filepath.Join(userPath, "ffmpeg")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-		candidate = filepath.Join(userPath, "ffmpeg.exe")
-		if _, err := os.Stat(candidate); err == nil {
+		if candidate := ffmpegInDir(userPath); candidate != "" {
 			return candidate
 		}
 		fmt.Printf("  %s[warn]%s 未找到 ffmpeg 路径: %s\n", yellow, reset, userPath)
@@ -1393,4 +1495,14 @@ func findFFmpeg(userPath string) string {
 		}
 		fmt.Printf("  %s[error]%s 文件未找到: %s\n", red, reset, line)
 	}
+}
+
+func ffmpegInDir(dir string) string {
+	for _, name := range []string{"ffmpeg.exe", "ffmpeg"} {
+		candidate := filepath.Join(dir, name)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
