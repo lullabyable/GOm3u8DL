@@ -646,7 +646,10 @@ func renderProgress(desc string, e m3u8dl.ProgressEvent) {
 
 	// Use \r to overwrite the same line (no trailing newline)
 	if runtime.GOOS == "windows" {
-		fmt.Fprintf(os.Stderr, "\r%s", line)
+		// Windows CMD: strip ANSI codes, clear with spaces, then write
+		cleanLine := stripANSI(line)
+		fmt.Fprintf(os.Stderr, "\r%-200s\r%s", "", cleanLine)
+		os.Stderr.Sync()
 	} else {
 		fmt.Fprintf(os.Stderr, "\r%s%s", eraseLine, line)
 	}
@@ -671,7 +674,9 @@ func renderProgressDone(desc string, e m3u8dl.ProgressEvent) {
 
 	// Overwrite current line then print newline to commit
 	if runtime.GOOS == "windows" {
-		fmt.Fprintf(os.Stderr, "\r%s\n", line)
+		cleanLine := stripANSI(line)
+		fmt.Fprintf(os.Stderr, "\r%-200s\r%s\n", "", cleanLine)
+		os.Stderr.Sync()
 	} else {
 		fmt.Fprintf(os.Stderr, "\r%s%s\n", eraseLine, line)
 	}
@@ -695,6 +700,26 @@ func truncateDesc(s string, max int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:max-1]) + "…"
+}
+
+// stripANSI removes ANSI escape codes from a string (for Windows CMD fallback).
+func stripANSI(s string) string {
+	var result []byte
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if (s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		result = append(result, s[i])
+	}
+	return string(result)
 }
 
 // ── Formatting helpers (matching N_m3u8DL-RE style) ───────────────────
