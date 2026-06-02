@@ -91,8 +91,8 @@ func main() {
 	flag.StringVar(&ffmpegDir, "ffmpeg-dir", "", "Path to ffmpeg binary or directory")
 	flag.Var(&headers, "H", "HTTP header (repeatable, format: Key: Value)")
 	flag.Var(&keys, "key", "Decryption key in kid:key hex format (repeatable)")
-	flag.BoolVar(&autoSub, "auto-subtitle-fix", false, "Auto-fix subtitle timing")
-	flag.BoolVar(&subOnly, "sub-only", false, "Download subtitles only")
+	flag.BoolVar(&autoSub, "auto-subtitle-fix", false, "自动修复字幕时间轴")
+	flag.BoolVar(&subOnly, "sub-only", false, "仅下载字幕")
 	flag.BoolVar(&showVersion, "version", false, "Show version")
 	flag.StringVar(&svSelect, "sv", "", "Stream selection filter")
 
@@ -126,7 +126,7 @@ func main() {
 	if url == "" && !hasStdinPiped() {
 		url, outputDir, tmpDir, saveName, concurrency, maxSpeed, mergeMode, ffmpegDir, headers, keys, autoSub, subOnly, svSelect = interactiveMode()
 		if url == "" {
-			fmt.Fprintf(os.Stderr, "%sError: URL is required%s\n", red, reset)
+			fmt.Fprintf(os.Stderr, "%s错误: 必须提供 URL%s\n", red, reset)
 			os.Exit(1)
 		}
 	}
@@ -145,9 +145,9 @@ func main() {
 	if cfgPath, found := m3u8dl.FindConfig(); found {
 		cfg, err := m3u8dl.LoadConfig(cfgPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s[warn]%s Config load failed (%s): %v\n", yellow, reset, cfgPath, err)
+			fmt.Fprintf(os.Stderr, "%s[warn]%s 配置加载失败 (%s): %v\n", yellow, reset, cfgPath, err)
 		} else {
-			fmt.Printf("%s[info]%s Config loaded: %s\n", cyan, reset, cfgPath)
+			fmt.Printf("%s[info]%s 配置已加载: %s\n", cyan, reset, cfgPath)
 			// Apply config defaults — only for flags NOT explicitly set via CLI
 			if !cliFlags["thread-num"] && cfg.ThreadNum > 0 {
 				concurrency = cfg.ThreadNum
@@ -210,7 +210,7 @@ func main() {
 	var ffmpegPath string
 	if mode == model.MergeModeFFmpeg {
 		ffmpegPath = findFFmpeg(ffmpegDir)
-		fmt.Printf("%s[info]%s Using ffmpeg: %s\n", cyan, reset, ffmpegPath)
+		fmt.Printf("%s[info]%s 使用 ffmpeg: %s\n", cyan, reset, ffmpegPath)
 	}
 
 	engine := m3u8dl.New(
@@ -227,7 +227,7 @@ func main() {
 	go func() {
 		<-sigCh
 		fmt.Print(showCur) // restore cursor on exit
-		fmt.Fprintf(os.Stderr, "\n%s[warn]%s User cancelled.\n", yellow, reset)
+		fmt.Fprintf(os.Stderr, "\n%s[warn]%s 用户已取消。\n", yellow, reset)
 		cancel()
 		os.Exit(0)
 	}()
@@ -236,14 +236,14 @@ func main() {
 	printBanner(url)
 
 	// ── Parse manifest ──────────────────────────────────────────────
-	fmt.Printf("%s[info]%s Fetching manifest...\n", cyan, reset)
+	fmt.Printf("%s[info]%s 正在获取播放列表...\n", cyan, reset)
 	streams, err := engine.GetStreams(ctx, url, headerMap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s[error]%s %v\n", red, reset, err)
 		os.Exit(1)
 	}
 	if len(streams) == 0 {
-		fmt.Fprintf(os.Stderr, "%s[error]%s No streams found\n", red, reset)
+		fmt.Fprintf(os.Stderr, "%s[error]%s 未找到流\n", red, reset)
 		os.Exit(1)
 	}
 
@@ -252,7 +252,7 @@ func main() {
 	}
 
 	// ── Print all streams ───────────────────────────────────────────
-	fmt.Printf("\n%s[info]%s %d streams found:\n", cyan, reset, len(streams))
+	fmt.Printf("\n%s[info]%s 找到 %d 个流:\n", cyan, reset, len(streams))
 	for _, s := range streams {
 		fmt.Println("  " + streamToString(s))
 	}
@@ -281,11 +281,11 @@ func main() {
 			selected = interactiveStreamSelect(streams)
 		}
 		if selected == nil {
-			fmt.Fprintf(os.Stderr, "%s[error]%s No stream selected\n", red, reset)
+			fmt.Fprintf(os.Stderr, "%s[error]%s 未选择流\n", red, reset)
 			os.Exit(1)
 		}
 
-		fmt.Printf("\n%s[info]%s Selected: %s\n", cyan, reset, streamToShortString(*selected))
+		fmt.Printf("\n%s[info]%s 已选择: %s\n", cyan, reset, streamToShortString(*selected))
 		downloadSingleStream(ctx, engine, url, selected, outputDir, tmpDir, saveName,
 			headerMap, concurrency, maxSpeed, mode, ffmpegPath, autoSub, subOnly)
 	}
@@ -310,24 +310,24 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 	mergeMode = "ts2mp4"
 
 	fmt.Printf("\n")
-	fmt.Printf("  %s%sGOm3u8DL%s — Stream Downloader\n", cyan, bold, reset)
+	fmt.Printf("  %s%sGOm3u8DL%s — 流媒体下载器\n", cyan, bold, reset)
 	fmt.Printf("  %sPure Go HLS / DASH / MSS%s\n\n", dim, reset)
 
 	// Show usage hint
 	fmt.Printf("  %sUsage:%s <URL> [flags]    %s(flags are optional, press Enter for defaults)%s\n\n", bold, reset, dim, reset)
 	fmt.Printf("  %sAvailable flags:%s\n", dim, reset)
-	fmt.Printf("    -save-dir <dir>       Output directory     %s(default: ./downloads)%s\n", grey, reset)
-	fmt.Printf("    -tmp-dir <dir>        Temp directory       %s(default: {save-dir}/)%s\n", grey, reset)
-	fmt.Printf("    -save-name <name>     Output filename      %s(default: auto)%s\n", grey, reset)
-	fmt.Printf("    -thread-num <n>       Thread count         %s(default: 8)%s\n", grey, reset)
-	fmt.Printf("    -max-speed <n>        Speed limit          %s(e.g. 2M, 500K, default: unlimited)%s\n", grey, reset)
-	fmt.Printf("    -merge <mode>         Merge mode           %s(binary/ts2mp4/fmp4/ffmpeg/no, default: ts2mp4)%s\n", grey, reset)
-	fmt.Printf("    -ffmpeg-dir <path>    ffmpeg path          %s(binary or directory)%s\n", grey, reset)
-	fmt.Printf("    -H <header>           HTTP header          %s(repeatable, Key: Value)%s\n", grey, reset)
-	fmt.Printf("    -key <kid:key>        Decryption key       %s(repeatable, hex)%s\n", grey, reset)
-	fmt.Printf("    -sv <filter>          Stream filter        %s(e.g. res=1920x1080)%s\n", grey, reset)
-	fmt.Printf("    -auto-subtitle-fix    Auto-fix subtitle timing\n")
-	fmt.Printf("    -sub-only             Download subtitles only\n\n")
+	fmt.Printf("    -save-dir <dir>       输出目录           %s(默认: ./downloads)%s\n", grey, reset)
+	fmt.Printf("    -tmp-dir <dir>        临时目录           %s(默认: {save-dir}/)%s\n", grey, reset)
+	fmt.Printf("    -save-name <name>     输出文件名         %s(默认: 自动生成)%s\n", grey, reset)
+	fmt.Printf("    -thread-num <n>       线程数             %s(默认: 8)%s\n", grey, reset)
+	fmt.Printf("    -max-speed <n>        限速               %s(如 2M, 500K, 默认: 不限)%s\n", grey, reset)
+	fmt.Printf("    -merge <mode>         合并模式           %s(binary/ts2mp4/fmp4/ffmpeg/no, 默认: ts2mp4)%s\n", grey, reset)
+	fmt.Printf("    -ffmpeg-dir <path>    ffmpeg 路径        %s(可执行文件或目录)%s\n", grey, reset)
+	fmt.Printf("    -H <header>           HTTP 请求头        %s(可重复, Key: Value)%s\n", grey, reset)
+	fmt.Printf("    -key <kid:key>        解密密钥           %s(可重复, 十六进制)%s\n", grey, reset)
+	fmt.Printf("    -sv <filter>          流过滤器           %s(如 res=1920x1080)%s\n", grey, reset)
+	fmt.Printf("    -auto-subtitle-fix    自动修复字幕时间轴\n")
+	fmt.Printf("    -sub-only             仅下载字幕\n\n")
 
 	// Single line input
 	for {
@@ -387,7 +387,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 		fs.StringVar(&svSelect, "sv", "", "")
 
 		if err := fs.Parse(remaining); err != nil {
-			fmt.Printf("    %s⚠ Parse error: %v%s\n\n", red, reset, err)
+			fmt.Printf("    %s⚠ 解析错误: %v%s\n\n", red, reset, err)
 			url = ""
 			continue
 		}
@@ -546,7 +546,7 @@ func interactiveStreamSelect(streams []model.StreamInfo) *model.StreamInfo {
 		}
 	}
 
-	fmt.Printf("\n%s[info]%s Please select streams:\n\n", cyan, reset)
+	fmt.Printf("\n%s[info]%s 请选择流:\n\n", cyan, reset)
 
 	idx := 0
 	typeOrder := []struct {
@@ -584,7 +584,7 @@ func interactiveStreamSelect(streams []model.StreamInfo) *model.StreamInfo {
 
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Printf("  %s▶%s Select stream number %s[1-%d]%s: ", green, reset, dim, len(streams), reset)
+		fmt.Printf("  %s▶%s 选择流编号 %s[1-%d]%s: ", green, reset, dim, len(streams), reset)
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 		if input == "" {
@@ -660,7 +660,7 @@ func renderProgressDone(desc string, e m3u8dl.ProgressEvent) {
 		doneTotal,
 		pctStr,
 		sizeStr,
-		"done!",
+		"完成!",
 		"✓")
 
 	// Overwrite current line then print newline to commit
@@ -755,13 +755,13 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	}
 
 	if selectedVideo == nil || selectedAudio == nil {
-		fmt.Fprintf(os.Stderr, "%s[error]%s Failed to select streams\n", red, reset)
+		fmt.Fprintf(os.Stderr, "%s[error]%s 流选择失败\n", red, reset)
 		os.Exit(1)
 	}
 
-	fmt.Printf("\n%s[info]%s Downloading:\n", cyan, reset)
-	fmt.Printf("  %sVideo:%s %s\n", bold, reset, streamToShortString(*selectedVideo))
-	fmt.Printf("  %sAudio:%s %s\n", bold, reset, streamToShortString(*selectedAudio))
+	fmt.Printf("\n%s[info]%s 下载任务:\n", cyan, reset)
+	fmt.Printf("  %s视频:%s %s\n", bold, reset, streamToShortString(*selectedVideo))
+	fmt.Printf("  %s音频:%s %s\n", bold, reset, streamToShortString(*selectedAudio))
 
 	videoDesc := streamToShortString(*selectedVideo)
 	audioDesc := streamToShortString(*selectedAudio)
@@ -774,10 +774,10 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	}
 	rootTmp := filepath.Join(baseDir, saveName+"_tmp")
 	if err := os.MkdirAll(rootTmp, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "%s[error]%s Create temp dir: %v\n", red, reset, err)
+		fmt.Fprintf(os.Stderr, "%s[error]%s 创建临时目录失败: %v\n", red, reset, err)
 		os.Exit(1)
 	}
-	fmt.Printf("%s[info]%s Temp dir: %s\n", cyan, reset, rootTmp)
+	fmt.Printf("%s[info]%s 临时目录: %s\n", cyan, reset, rootTmp)
 
 	var lastProgressTime time.Time
 	handler := m3u8dl.EventHandlerFunc{
@@ -802,7 +802,7 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	}
 
 	// Download video
-	fmt.Printf("\n%s[info]%s Downloading video segments...\n", cyan, reset)
+	fmt.Printf("\n%s[info]%s 正在下载视频分段...\n", cyan, reset)
 	fmt.Print(hideCur) // hide cursor during progress
 	videoReq := model.DownloadRequest{
 		Stream:             selectedVideo,
@@ -820,14 +820,14 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	fmt.Print(showCur)
 	if err != nil {
 		clearProgress()
-		fmt.Fprintf(os.Stderr, "\n%s[error]%s Video download failed: %v\n", red, reset, err)
+		fmt.Fprintf(os.Stderr, "\n%s[error]%s 视频下载失败: %v\n", red, reset, err)
 		os.Exit(1)
 	}
 	clearProgress()
-	fmt.Printf("%s[info]%s Video done: %d segments\n", green, reset, len(videoResult.SegmentPaths))
+	fmt.Printf("%s[info]%s 视频下载完成: %d 个分段\n", green, reset, len(videoResult.SegmentPaths))
 
 	// Download audio
-	fmt.Printf("\n%s[info]%s Downloading audio segments...\n", cyan, reset)
+	fmt.Printf("\n%s[info]%s 正在下载音频分段...\n", cyan, reset)
 	fmt.Print(hideCur)
 	handler.OnProgressFn = func(e m3u8dl.ProgressEvent) {
 		now := time.Now()
@@ -853,24 +853,24 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	fmt.Print(showCur)
 	if err != nil {
 		clearProgress()
-		fmt.Fprintf(os.Stderr, "\n%s[error]%s Audio download failed: %v\n", red, reset, err)
+		fmt.Fprintf(os.Stderr, "\n%s[error]%s 音频下载失败: %v\n", red, reset, err)
 		os.Exit(1)
 	}
 	clearProgress()
-	fmt.Printf("%s[info]%s Audio done: %d segments\n", green, reset, len(audioResult.SegmentPaths))
+	fmt.Printf("%s[info]%s 音频下载完成: %d 个分段\n", green, reset, len(audioResult.SegmentPaths))
 
 	// Mux (skip if MergeModeNo)
 	outputPath := filepath.Join(outputDir, saveName+".mp4")
 
 	if mode == model.MergeModeNo {
-		fmt.Printf("\n%s[info]%s Download only mode — segments saved to: %s\n", cyan, reset, rootTmp)
-		fmt.Printf("%s[info]%s Video: %d segments in %s\n", green, reset, len(videoResult.SegmentPaths), filepath.Join(rootTmp, "video_tmp"))
-		fmt.Printf("%s[info]%s Audio: %d segments in %s\n", green, reset, len(audioResult.SegmentPaths), filepath.Join(rootTmp, "audio_tmp"))
+		fmt.Printf("\n%s[info]%s 仅下载模式 — 分段保存在: %s\n", cyan, reset, rootTmp)
+		fmt.Printf("%s[info]%s 视频: %d 个分段, 路径: %s\n", green, reset, len(videoResult.SegmentPaths), filepath.Join(rootTmp, "video_tmp"))
+		fmt.Printf("%s[info]%s 音频: %d 个分段, 路径: %s\n", green, reset, len(audioResult.SegmentPaths), filepath.Join(rootTmp, "audio_tmp"))
 		printDone(rootTmp)
 		return
 	}
 
-	fmt.Printf("\n%s[info]%s Muxing %d video + %d audio → %s (%s)\n",
+	fmt.Printf("\n%s[info]%s 混流 %d 视频 + %d 音频 → %s (%s)\n",
 		cyan, reset, len(videoResult.SegmentPaths), len(audioResult.SegmentPaths), outputPath, mergeModeStr(mode))
 
 	isTS := isTSFormat(videoResult.SegmentPaths)
@@ -905,7 +905,7 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	os.RemoveAll(rootTmp)
 
 	if muxErr != nil {
-		fmt.Fprintf(os.Stderr, "%s[error]%s Mux failed: %v\n", red, reset, muxErr)
+		fmt.Fprintf(os.Stderr, "%s[error]%s 混流失败: %v\n", red, reset, muxErr)
 		os.Exit(1)
 	}
 
@@ -953,11 +953,11 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 			statusLabel := strings.ToUpper(e.Status.String())
 			switch e.Status {
 			case model.TaskStatusDone:
-				fmt.Printf("  %s[done]%s %s\n", green, reset, e.TaskID)
+				fmt.Printf("  %s完成%s %s\n", green, reset, e.TaskID)
 			case model.TaskStatusFailed:
-				fmt.Printf("  %s[fail]%s %s\n", red, reset, e.TaskID)
+				fmt.Printf("  %s失败%s %s\n", red, reset, e.TaskID)
 			case model.TaskStatusMerging:
-				fmt.Printf("  %s[merge]%s %s\n", blue, reset, e.TaskID)
+				fmt.Printf("  %s合并%s %s\n", blue, reset, e.TaskID)
 			default:
 				fmt.Printf("  %s[%s]%s %s\n", dim, statusLabel, reset, e.TaskID)
 			}
@@ -970,13 +970,13 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 		},
 	}
 
-	fmt.Printf("\n%s[info]%s Starting download...\n", cyan, reset)
+	fmt.Printf("\n%s[info]%s 开始下载...\n", cyan, reset)
 	fmt.Print(hideCur) // hide cursor during progress
 
 	if err := engine.Download(ctx, req, handler); err != nil {
 		fmt.Print(showCur)
 		clearProgress()
-		fmt.Fprintf(os.Stderr, "\n%s[error]%s Download failed: %v\n", red, reset, err)
+		fmt.Fprintf(os.Stderr, "\n%s[error]%s 下载失败: %v\n", red, reset, err)
 		os.Exit(1)
 	}
 
@@ -998,7 +998,7 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 	})
 
 	fmt.Printf("\n")
-	fmt.Printf("%s%s  Done!  %s  Output: %s  Size: %s  Time: %s\n",
+	fmt.Printf("%s%s  完成!  %s  输出: %s  大小: %s  耗时: %s\n",
 		bgGreen, white+bold, reset, outputPath, formatFileSize(float64(fileSize)), formatDuration(elapsed))
 	fmt.Printf("\n")
 }
@@ -1008,7 +1008,7 @@ func printDone(path string) {
 	if fi, err := os.Stat(path); err == nil {
 		size = fi.Size()
 	}
-	fmt.Printf("\n%s%s  Done!  %s  Output: %s  Size: %s\n\n",
+	fmt.Printf("\n%s%s  完成!  %s  输出: %s  大小: %s\n\n",
 		bgGreen, white+bold, reset, path, formatFileSize(float64(size)))
 }
 
@@ -1258,7 +1258,7 @@ func selectStreamByFilter(streams []model.StreamInfo, svRaw string) *model.Strea
 		}
 	}
 	if len(matches) == 0 {
-		fmt.Fprintf(os.Stderr, "%s[error]%s No streams match -sv filter\n", red, reset)
+		fmt.Fprintf(os.Stderr, "%s[error]%s 没有流匹配 -sv 过滤器\n", red, reset)
 		os.Exit(1)
 	}
 	sort.Slice(matches, func(i, j int) bool {
@@ -1330,7 +1330,7 @@ func findFFmpeg(userPath string) string {
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
-		fmt.Printf("  %s[warn]%s ffmpeg not found at: %s\n", yellow, reset, userPath)
+		fmt.Printf("  %s[warn]%s 未找到 ffmpeg 路径: %s\n", yellow, reset, userPath)
 	}
 
 	// 2. System PATH
@@ -1341,7 +1341,7 @@ func findFFmpeg(userPath string) string {
 	// 3. Prompt user
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Printf("  %s[warn]%s ffmpeg not found in PATH\n", yellow, reset)
+		fmt.Printf("  %s[warn]%s 在 PATH 中未找到 ffmpeg\n", yellow, reset)
 		fmt.Printf("  %s▶%s Enter ffmpeg path (or install it and press Enter to retry): ", green, reset)
 		line, _ := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
@@ -1355,6 +1355,6 @@ func findFFmpeg(userPath string) string {
 		if _, err := os.Stat(line); err == nil {
 			return line
 		}
-		fmt.Printf("  %s[error]%s File not found: %s\n", red, reset, line)
+		fmt.Printf("  %s[error]%s 文件未找到: %s\n", red, reset, line)
 	}
 }

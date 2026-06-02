@@ -105,7 +105,7 @@ func detectFormat(content, url string) string {
 func (e *Engine) GetStreams(ctx context.Context, url string, headers map[string]string) ([]model.StreamInfo, error) {
 	body, _, err := e.fetchURL(ctx, url, headers)
 	if err != nil {
-		return nil, fmt.Errorf("fetch manifest: %w", err)
+		return nil, fmt.Errorf("获取播放列表失败: %w", err)
 	}
 
 	format := detectFormat(body, url)
@@ -115,7 +115,7 @@ func (e *Engine) GetStreams(ctx context.Context, url string, headers map[string]
 		ext := hls.NewExtractor(url)
 		streams, playlist, err := ext.Parse(body)
 		if err != nil {
-			return nil, fmt.Errorf("parse HLS: %w", err)
+			return nil, fmt.Errorf("解析 HLS 失败: %w", err)
 		}
 		// If it's a media playlist (no master), wrap as a single stream
 		if len(streams) == 0 && playlist != nil {
@@ -152,7 +152,7 @@ func (e *Engine) GetStreams(ctx context.Context, url string, headers map[string]
 		ext := dash.NewExtractor(url)
 		streams, err := ext.Parse(body)
 		if err != nil {
-			return nil, fmt.Errorf("parse DASH: %w", err)
+			return nil, fmt.Errorf("解析 DASH 失败: %w", err)
 		}
 		for i := range streams {
 			if streams[i].Playlist != nil {
@@ -167,7 +167,7 @@ func (e *Engine) GetStreams(ctx context.Context, url string, headers map[string]
 		ext := mss.NewExtractor(url)
 		streams, err := ext.Parse(body)
 		if err != nil {
-			return nil, fmt.Errorf("parse MSS: %w", err)
+			return nil, fmt.Errorf("解析 MSS 失败: %w", err)
 		}
 		for i := range streams {
 			if streams[i].Playlist != nil {
@@ -179,7 +179,7 @@ func (e *Engine) GetStreams(ctx context.Context, url string, headers map[string]
 		return streams, nil
 
 	default:
-		return nil, fmt.Errorf("unknown manifest format")
+		return nil, fmt.Errorf("未知的播放列表格式")
 	}
 }
 
@@ -206,15 +206,15 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	stream := req.Stream
 	if stream == nil {
 		if req.URL == "" {
-			return fmt.Errorf("no stream or URL provided")
+			return fmt.Errorf("未提供流或 URL")
 		}
-		emitLog(LogInfo, fmt.Sprintf("Parsing: %s", req.URL))
+		emitLog(LogInfo, fmt.Sprintf("正在解析: %s", req.URL))
 		streams, err := e.GetStreams(ctx, req.URL, req.Headers)
 		if err != nil {
-			return fmt.Errorf("get streams: %w", err)
+			return fmt.Errorf("获取流失败: %w", err)
 		}
 		if len(streams) == 0 {
-			return fmt.Errorf("no streams found")
+			return fmt.Errorf("未找到流")
 		}
 		// Auto-select: pick highest bandwidth video stream
 		stream = &streams[0]
@@ -227,7 +227,7 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	}
 
 	if stream.Playlist == nil {
-		return fmt.Errorf("stream has no playlist (segments not resolved)")
+		return fmt.Errorf("流无播放列表 (分段未解析)")
 	}
 
 	// Count total segments
@@ -236,16 +236,16 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 		allSegments = append(allSegments, part.MediaSegments...)
 	}
 	if len(allSegments) == 0 {
-		return fmt.Errorf("no segments in playlist")
+		return fmt.Errorf("播放列表中无分段")
 	}
 
-	emitLog(LogInfo, fmt.Sprintf("Stream: %s %s (%d segments)",
+	emitLog(LogInfo, fmt.Sprintf("流: %s %s (%d 个分段)",
 		stream.Name, stream.Resolution, len(allSegments)))
 
 	// 2. Fetch encryption keys if needed
 	if err := e.fetchEncryptionKeys(ctx, stream.Playlist, req.Headers); err != nil {
 		emitStatus(model.TaskStatusFailed)
-		return fmt.Errorf("fetch encryption keys: %w", err)
+		return fmt.Errorf("获取解密密钥失败: %w", err)
 	}
 
 	// 3. Create output and temp directories
@@ -254,7 +254,7 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 		outDir = "."
 	}
 	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
+		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
 	// Temp dir: if TmpDir is set, use it directly (caller controls structure).
 	// Otherwise default to {outputDir}/{saveName}_tmp.
@@ -310,7 +310,7 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	segmentPaths, err := mgr.DownloadSegments(ctx, stream.Playlist, tempDir)
 	if err != nil {
 		emitStatus(model.TaskStatusFailed)
-		return fmt.Errorf("download segments: %w", err)
+		return fmt.Errorf("下载分段失败: %w", err)
 	}
 
 	// 4. Merge segments (skip if MergeModeNo)
@@ -321,22 +321,22 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	if mergeMode != model.MergeModeNo && mergeMode != model.MergeModeFFmpeg && len(segmentPaths) > 0 {
 		detected := detectSegmentFormat(segmentPaths[0])
 		if detected == "fmp4" && mergeMode == model.MergeModeTS2MP4 {
-			emitLog(LogInfo, "Detected fMP4 segments, switching to fmp4 merge mode")
+			emitLog(LogInfo, "检测到 fMP4 分段, 切换到 fmp4 合并模式")
 			mergeMode = model.MergeModeFMP4
 		} else if detected == "ts" && mergeMode == model.MergeModeFMP4 {
-			emitLog(LogInfo, "Detected TS segments, switching to ts2mp4 merge mode")
+			emitLog(LogInfo, "检测到 TS 分段, 切换到 ts2mp4 合并模式")
 			mergeMode = model.MergeModeTS2MP4
 		}
 	}
 
 	if mergeMode == model.MergeModeNo {
-		emitLog(LogInfo, fmt.Sprintf("Download only mode — %d segments saved to: %s", len(segmentPaths), tempDir))
+		emitLog(LogInfo, fmt.Sprintf("仅下载模式 — %d 个分段保存在: %s", len(segmentPaths), tempDir))
 	} else {
 		emitStatus(model.TaskStatusMerging)
-		emitLog(LogInfo, fmt.Sprintf("Merging %d segments (%s)...", len(segmentPaths), mergeModeStr(mergeMode)))
+		emitLog(LogInfo, fmt.Sprintf("正在合并 %d 个分段 (%s)...", len(segmentPaths), mergeModeStr(mergeMode)))
 
 		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-			return fmt.Errorf("create output dir: %w", err)
+			return fmt.Errorf("创建输出目录失败: %w", err)
 		}
 
 		switch mergeMode {
@@ -353,10 +353,10 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 				err = merge.BinaryMerge(segmentPaths, outputPath)
 			}
 		case model.MergeModeTS2MP4:
-			emitLog(LogInfo, "Using TS→MP4 remux (pure Go)")
+			emitLog(LogInfo, "使用 TS→MP4 重封装 (纯 Go)")
 			err = merge.TS2MP4Remux(segmentPaths, outputPath)
 		case model.MergeModeFMP4:
-			emitLog(LogInfo, "Using fragmented MP4 merge (pure Go)")
+			emitLog(LogInfo, "使用分片 MP4 合并 (纯 Go)")
 			// FMP4Merge needs init segment path as first arg
 			initPath := ""
 			if stream.Playlist.MediaInit != nil {
@@ -368,7 +368,7 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 			if ffmpegPath == "" {
 				ffmpegPath = "ffmpeg"
 			}
-			emitLog(LogInfo, fmt.Sprintf("Using ffmpeg merge (%s)", ffmpegPath))
+			emitLog(LogInfo, fmt.Sprintf("使用 ffmpeg 合并 (%s)", ffmpegPath))
 			err = merge.FFmpegMerge(segmentPaths, outputPath, ffmpegPath)
 		default:
 			err = merge.BinaryMerge(segmentPaths, outputPath)
@@ -376,14 +376,14 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 
 		if err != nil {
 			emitStatus(model.TaskStatusFailed)
-			return fmt.Errorf("merge: %w", err)
+			return fmt.Errorf("合并失败: %w", err)
 		}
 	}
 
 	// 5. Final report
 	duration := time.Since(startTime).Seconds()
 	emitStatus(model.TaskStatusDone)
-	emitLog(LogInfo, fmt.Sprintf("Done! Output: %s (%.1fs)", outputPath, duration))
+	emitLog(LogInfo, fmt.Sprintf("完成! 输出: %s (%.1fs)", outputPath, duration))
 
 	if handler != nil {
 		handler.OnProgress(ProgressEvent{
@@ -419,14 +419,14 @@ func (e *Engine) DownloadOnly(ctx context.Context, req model.DownloadRequest, ha
 	stream := req.Stream
 	if stream == nil {
 		if req.URL == "" {
-			return nil, fmt.Errorf("no stream or URL provided")
+			return nil, fmt.Errorf("未提供流或 URL")
 		}
 		streams, err := e.GetStreams(ctx, req.URL, req.Headers)
 		if err != nil {
-			return nil, fmt.Errorf("get streams: %w", err)
+			return nil, fmt.Errorf("获取流失败: %w", err)
 		}
 		if len(streams) == 0 {
-			return nil, fmt.Errorf("no streams found")
+			return nil, fmt.Errorf("未找到流")
 		}
 		stream = &streams[0]
 		for i := range streams {
@@ -438,12 +438,12 @@ func (e *Engine) DownloadOnly(ctx context.Context, req model.DownloadRequest, ha
 	}
 
 	if stream.Playlist == nil {
-		return nil, fmt.Errorf("stream has no playlist")
+		return nil, fmt.Errorf("流无播放列表")
 	}
 
 	// Fetch encryption keys
 	if err := e.fetchEncryptionKeys(ctx, stream.Playlist, req.Headers); err != nil {
-		return nil, fmt.Errorf("fetch encryption keys: %w", err)
+		return nil, fmt.Errorf("获取解密密钥失败: %w", err)
 	}
 
 	// Create output and temp directories
@@ -452,7 +452,7 @@ func (e *Engine) DownloadOnly(ctx context.Context, req model.DownloadRequest, ha
 		outDir = "."
 	}
 	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return nil, fmt.Errorf("create output dir: %w", err)
+		return nil, fmt.Errorf("创建输出目录失败: %w", err)
 	}
 	// Temp dir: if TmpDir is set, use it directly (caller controls structure).
 	// Otherwise default to {outputDir}/{saveName}_tmp.
@@ -502,7 +502,7 @@ func (e *Engine) DownloadOnly(ctx context.Context, req model.DownloadRequest, ha
 
 	segmentPaths, err := mgr.DownloadSegments(ctx, stream.Playlist, tempDir)
 	if err != nil {
-		return nil, fmt.Errorf("download segments: %w", err)
+		return nil, fmt.Errorf("下载分段失败: %w", err)
 	}
 
 	// Find init segment path if exists
@@ -514,7 +514,7 @@ func (e *Engine) DownloadOnly(ctx context.Context, req model.DownloadRequest, ha
 		}
 	}
 
-	emitLog(LogInfo, fmt.Sprintf("Downloaded %d segments to %s", len(segmentPaths), tempDir))
+	emitLog(LogInfo, fmt.Sprintf("已下载 %d 个分段到 %s", len(segmentPaths), tempDir))
 
 	return &DownloadResult{
 		SegmentPaths: segmentPaths,
@@ -531,7 +531,7 @@ func (e *Engine) DownloadWithAutoSelect(ctx context.Context, url string, handler
 		return err
 	}
 	if len(streams) == 0 {
-		return fmt.Errorf("no streams found")
+		return fmt.Errorf("未找到流")
 	}
 
 	// Apply AutoSelectRule, for now pick first video stream
@@ -628,7 +628,7 @@ func (e *Engine) fetchEncryptionKeys(ctx context.Context, playlist *model.Playli
 	for url, info := range keyMap {
 		keyBytes, err := e.fetchKey(ctx, info.url, headers)
 		if err != nil {
-			return fmt.Errorf("fetch key %s: %w", url, err)
+			return fmt.Errorf("获取密钥 %s 失败: %w", url, err)
 		}
 		fetchedKeys[url] = keyBytes
 	}
@@ -674,7 +674,7 @@ func (e *Engine) fetchKey(ctx context.Context, keyURL string, headers map[string
 	}
 
 	if len(key) != 16 {
-		return nil, fmt.Errorf("invalid AES-128 key length: %d bytes (expected 16)", len(key))
+		return nil, fmt.Errorf("无效的 AES-128 密钥长度: %d 字节 (预期 16)", len(key))
 	}
 
 	return key, nil
