@@ -645,13 +645,7 @@ func renderProgress(desc string, e m3u8dl.ProgressEvent) {
 		spin)
 
 	// Use \r to overwrite the same line (no trailing newline)
-	if runtime.GOOS == "windows" {
-		cleanLine := stripANSI(line)
-		clearLine()
-		fmt.Fprint(os.Stderr, cleanLine)
-	} else {
-		fmt.Fprintf(os.Stderr, "\r%s%s", eraseLine, line)
-	}
+	fmt.Fprintf(os.Stderr, "\r%s%s", eraseLine, line)
 }
 
 // renderProgressDone shows the final completed state (bar fully filled, green).
@@ -672,22 +666,12 @@ func renderProgressDone(desc string, e m3u8dl.ProgressEvent) {
 		"✓")
 
 	// Overwrite current line then print newline to commit
-	if runtime.GOOS == "windows" {
-		cleanLine := stripANSI(line)
-		clearLine()
-		fmt.Fprintf(os.Stderr, "%s\n", cleanLine)
-	} else {
-		fmt.Fprintf(os.Stderr, "\r%s%s\n", eraseLine, line)
-	}
+	fmt.Fprintf(os.Stderr, "\r%s%s\n", eraseLine, line)
 }
 
 // clearProgress erases the current progress line.
 func clearProgress() {
-	if runtime.GOOS == "windows" {
-		clearLine()
-	} else {
-		fmt.Fprintf(os.Stderr, "\r%s", eraseLine)
-	}
+	fmt.Fprintf(os.Stderr, "\r%s", eraseLine)
 }
 
 

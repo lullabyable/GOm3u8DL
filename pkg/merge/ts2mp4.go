@@ -1207,24 +1207,22 @@ func buildAudioSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Samp
 	esdsPayload := buildESDS(aacConfig)
 	esdsBoxSize := 8 + len(esdsPayload)
 
-	// Audio Sample Entry layout (ISO 14496-12):
-	// [0:4]   size
+	// AudioSampleEntry layout (ISO 14496-12 Table 8-3 + Apple QuickTime):
+	// [0:4]   size (uint32)
 	// [4:8]   type "mp4a"
-	// [8:10]  reserved (6 bytes at [8:14])
-	// [10:12] data_reference_index
-	// [12:20] reserved (8 bytes)
-	// [20:22] channel_count
-	// [22:24] sample_size
-	// [24:28] pre_defined + reserved
-	// [28:32] sample_rate (16.16 fixed point)
-	// [32:]   esds box
-	entrySize := 32 + esdsBoxSize
+	// [8:10]  channel_count (uint16)
+	// [10:12] sample_size (uint16)
+	// [12:14] pre_defined (uint16)
+	// [14:16] reserved (uint16)
+	// [16:20] sample_rate (uint32, 16.16 fixed point)
+	// [20:]   esds box
+	entrySize := 20 + esdsBoxSize
 	entry := make([]byte, entrySize)
 	binary.BigEndian.PutUint32(entry[0:4], uint32(entrySize))
 	copy(entry[4:8], "mp4a")
-	binary.BigEndian.PutUint16(entry[10:12], 1) // data_reference_index
-	binary.BigEndian.PutUint16(entry[20:22], 2) // channel_count (stereo)
-	binary.BigEndian.PutUint16(entry[22:24], 16) // sample_size
+	binary.BigEndian.PutUint16(entry[8:10], 2)   // channel_count (stereo)
+	binary.BigEndian.PutUint16(entry[10:12], 16)  // sample_size (16 bits)
+	// entry[12:16] = pre_defined + reserved = 0
 
 	// Detect sample rate from AudioSpecificConfig
 	sampleRate := uint32(44100)
@@ -1235,12 +1233,12 @@ func buildAudioSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Samp
 			sampleRate = srTable[srIndex]
 		}
 	}
-	binary.BigEndian.PutUint32(entry[28:32], sampleRate<<16) // 16.16 fixed point
+	binary.BigEndian.PutUint32(entry[16:20], sampleRate<<16) // 16.16 fixed point
 
-	// Write esds box at offset 32
-	binary.BigEndian.PutUint32(entry[32:36], uint32(esdsBoxSize))
-	copy(entry[36:40], "esds")
-	copy(entry[40:], esdsPayload)
+	// Write esds box at offset 20
+	binary.BigEndian.PutUint32(entry[20:24], uint32(esdsBoxSize))
+	copy(entry[24:28], "esds")
+	copy(entry[28:], esdsPayload)
 
 	return entry
 }
