@@ -137,7 +137,7 @@ func writeMP4Output(outputPath string, cfg *remuxConfig, videoSamples, audioSamp
 	// ftyp(20) + moov(8+len(moovPayload)) + mdat(8 or 16)
 	ftypSize := int64(20) // 8 header + 12 payload
 	moovSize := int64(8 + len(moovPayload))
-mdatHeaderSize := int64(8)
+	mdatHeaderSize := int64(8)
 	if mdatSize+8 > 0xFFFFFFFF {
 		moovSize = int64(8 + len(moovPayload))
 		mdatHeaderSize = 16
@@ -387,8 +387,8 @@ func buildMinfFull(cfg *remuxConfig, track *trackInfo, trackID uint32, isVideo b
 func buildStblFull(cfg *remuxConfig, track *trackInfo, trackID uint32, isVideo bool, samples []mp4Sample, dataOffset int64) []byte {
 	var stblBody []byte
 
-	// stsd
-	stsd := buildStsd(cfg, track, isVideo)
+	// stsd — now with proper codec config boxes (avcC / esds)
+	stsd := buildStsd(cfg, track, isVideo, samples)
 	stsdBox := make([]byte, 8+len(stsd))
 	binary.BigEndian.PutUint32(stsdBox[0:4], uint32(len(stsdBox)))
 	copy(stsdBox[4:8], "stsd")
@@ -496,10 +496,10 @@ func buildStss(samples []mp4Sample) []byte {
 func buildStsc(sampleCount int) []byte {
 	body := make([]byte, 4+4+12)
 	body[0] = 0
-	binary.BigEndian.PutUint32(body[4:8], 1)                       // entry count
-	binary.BigEndian.PutUint32(body[8:12], 1)                       // first chunk
-	binary.BigEndian.PutUint32(body[12:16], uint32(sampleCount))    // samples_per_chunk
-	binary.BigEndian.PutUint32(body[16:20], 1)                      // sample description index
+	binary.BigEndian.PutUint32(body[4:8], 1)                    // entry count
+	binary.BigEndian.PutUint32(body[8:12], 1)                    // first chunk
+	binary.BigEndian.PutUint32(body[12:16], uint32(sampleCount)) // samples_per_chunk
+	binary.BigEndian.PutUint32(body[16:20], 1)                   // sample description index
 	return body
 }
 
@@ -561,6 +561,9 @@ type trackInfo struct {
 	streamType uint8
 	width      uint16
 	height     uint16
+	// Codec config extracted from stream
+	avcConfig []byte // AVCDecoderConfigurationRecord (avcC payload)
+	aacConfig []byte // AudioSpecificConfig (esds payload)
 }
 
 type mp4Sample struct {
@@ -688,14 +691,22 @@ func parseTSFile(path string, cfg *remuxConfig) ([]mp4Sample, []mp4Sample, *trac
 
 	var videoSamples []mp4Sample
 	var audioSamples []mp4Sample
+	var avcConfig []byte
+	var aacConfig []byte
 
 	for _, pes := range pesPackets {
 		if pes.pid == videoPID {
-			samples := extractSamplesFromPES(pes.data, true, cfg.timescale)
+			samples, avcCfg := extractSamplesFromPES(pes.data, true, cfg.timescale)
 			videoSamples = append(videoSamples, samples...)
+			if avcConfig == nil && len(avcCfg) > 0 {
+				avcConfig = avcCfg
+			}
 		} else if pes.pid == audioPID {
-			samples := extractSamplesFromPES(pes.data, false, cfg.timescale)
+			samples, aacCfg := extractSamplesFromPES(pes.data, false, cfg.timescale)
 			audioSamples = append(audioSamples, samples...)
+			if aacConfig == nil && len(aacCfg) > 0 {
+				aacConfig = aacCfg
+			}
 		}
 	}
 
@@ -704,10 +715,12 @@ func parseTSFile(path string, cfg *remuxConfig) ([]mp4Sample, []mp4Sample, *trac
 		streamType: videoStreamType,
 		width:      1920,
 		height:     1080,
+		avcConfig:  avcConfig,
 	}
 	audioTrack := &trackInfo{
 		pid:        audioPID,
 		streamType: audioStreamType,
+		aacConfig:  aacConfig,
 	}
 
 	return videoSamples, audioSamples, videoTrack, audioTrack, nil
@@ -806,8 +819,17 @@ func parsePMT(payload []byte) (videoPID, audioPID uint16, videoST, audioST uint8
 	return videoPID, audioPID, videoST, audioST
 }
 
-func extractSamplesFromPES(data []byte, isVideo bool, timescale uint32) []mp4Sample {
+// extractSamplesFromPES parses PES packets and extracts media samples.
+// For video, it also extracts SPS/PPS NAL units to build avcC config.
+// For audio, it extracts AudioSpecificConfig from ADTS headers.
+func extractSamplesFromPES(data []byte, isVideo bool, timescale uint32) ([]mp4Sample, []byte) {
 	var samples []mp4Sample
+	var codecConfig []byte // avcC for video, AudioSpecificConfig for audio
+
+	// Track SPS/PPS for H.264 avcC
+	var spsData []byte
+	var ppsData []byte
+
 	offset := 0
 	for offset < len(data) {
 		if offset+3 >= len(data) {
@@ -857,6 +879,26 @@ func extractSamplesFromPES(data []byte, isVideo bool, timescale uint32) []mp4Sam
 		if payloadStart < payloadEnd {
 			payload := make([]byte, payloadEnd-payloadStart)
 			copy(payload, data[payloadStart:payloadEnd])
+
+			if isVideo {
+				// Extract SPS/PPS NAL units for avcC
+				sps, pps := extractSPSPPS(payload)
+				if len(sps) > 0 {
+					spsData = sps
+				}
+				if len(pps) > 0 {
+					ppsData = pps
+				}
+			} else {
+				// Extract AudioSpecificConfig from ADTS header
+				if codecConfig == nil && len(payload) > 7 {
+					aacCfg := extractADTSConfig(payload)
+					if len(aacCfg) > 0 {
+						codecConfig = aacCfg
+					}
+				}
+			}
+
 			sample := mp4Sample{
 				data:       payload,
 				pts:        pts,
@@ -877,13 +919,159 @@ func extractSamplesFromPES(data []byte, isVideo bool, timescale uint32) []mp4Sam
 				samples[i].duration = uint32(diff)
 			}
 		}
-		// Last sample gets the same duration as the second-to-last
 		if len(samples) > 1 {
 			samples[len(samples)-1].duration = samples[len(samples)-2].duration
 		}
 	}
 
-	return samples
+	// Build avcC from extracted SPS/PPS
+	if isVideo && len(spsData) > 0 {
+		codecConfig = buildAVCConfigRecord(spsData, ppsData)
+	}
+
+	return samples, codecConfig
+}
+
+// extractSPSPPS extracts SPS and PPS NAL units from H.264 access unit data.
+func extractSPSPPS(data []byte) (sps, pps []byte) {
+	nals := findNALUnits(data)
+	for _, nal := range nals {
+		if len(nal) < 1 {
+			continue
+		}
+		nalType := nal[0] & 0x1f
+		switch nalType {
+		case 7: // SPS
+			sps = make([]byte, len(nal))
+			copy(sps, nal)
+		case 8: // PPS
+			pps = make([]byte, len(nal))
+			copy(pps, nal)
+		}
+	}
+	return
+}
+
+// findNALUnits finds all NAL unit payloads (without start code) in data.
+func findNALUnits(data []byte) [][]byte {
+	var nals [][]byte
+	i := 0
+	for i < len(data) {
+		// Find start code (0x00 0x00 0x01 or 0x00 0x00 0x00 0x01)
+		startCodeLen := 0
+		if i+2 < len(data) && data[i] == 0 && data[i+1] == 0 && data[i+2] == 1 {
+			startCodeLen = 3
+		} else if i+3 < len(data) && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1 {
+			startCodeLen = 4
+		}
+		if startCodeLen == 0 {
+			i++
+			continue
+		}
+		nalStart := i + startCodeLen
+		// Find next start code or end of data
+		nalEnd := len(data)
+		for j := nalStart + 1; j < len(data)-2; j++ {
+			if data[j] == 0 && data[j+1] == 0 {
+				if j+2 < len(data) && data[j+2] == 1 {
+					nalEnd = j
+					break
+				}
+				if j+3 < len(data) && data[j+2] == 0 && data[j+3] == 1 {
+					nalEnd = j
+					break
+				}
+			}
+		}
+		if nalStart < nalEnd {
+			// Remove trailing zeros
+			nalData := data[nalStart:nalEnd]
+			for len(nalData) > 0 && nalData[len(nalData)-1] == 0 {
+				nalData = nalData[:len(nalData)-1]
+			}
+			if len(nalData) > 0 {
+				nals = append(nals, nalData)
+			}
+		}
+		i = nalEnd
+	}
+	return nals
+}
+
+// buildAVCConfigRecord builds an AVCDecoderConfigurationRecord (avcC box payload).
+func buildAVCConfigRecord(sps, pps []byte) []byte {
+	// Parse SPS to extract profile, compat, level
+	profile := uint8(0x64)  // default: High
+	compat := uint8(0x00)
+	level := uint8(0x1e)    // default: 3.0
+	if len(sps) >= 4 {
+		profile = sps[1]
+		compat = sps[2]
+		level = sps[3]
+	}
+
+	// avcC box structure:
+	// configurationVersion = 1
+	// AVCProfileIndication
+	// profile_compatibility
+	// AVCLevelIndication
+	// lengthSizeMinusOne = 3 (4 bytes NAL length)
+	// numOfSequenceParameterSets = 1
+	// spsLength (2 bytes) + sps data
+	// numOfPictureParameterSets = 1
+	// ppsLength (2 bytes) + pps data
+	size := 6 + 1 + 2 + len(sps) + 1 + 2 + len(pps)
+	buf := make([]byte, size)
+	buf[0] = 1 // configurationVersion
+	buf[1] = profile
+	buf[2] = compat
+	buf[3] = level
+	buf[4] = 0xff // lengthSizeMinusOne = 3 (0b11111100 | 0x03)
+	// numOfSPS = 1
+	buf[5] = 0xe1 // 0b11100000 | 1
+	// sps length
+	binary.BigEndian.PutUint16(buf[6:8], uint16(len(sps)))
+	copy(buf[8:], sps)
+	// numOfPPS = 1
+	buf[8+len(sps)] = 1
+	// pps length
+	binary.BigEndian.PutUint16(buf[9+len(sps):11+len(sps)], uint16(len(pps)))
+	copy(buf[11+len(sps):], pps)
+	return buf
+}
+
+// extractADTSConfig extracts AudioSpecificConfig from an ADTS frame header.
+// ADTS header is 7 bytes (no CRC) or 9 bytes (with CRC).
+func extractADTSConfig(data []byte) []byte {
+	if len(data) < 7 {
+		return nil
+	}
+	// Check ADTS sync word (0xFFF)
+	if data[0] != 0xff || (data[1]&0xf0) != 0xf0 {
+		return nil
+	}
+	// MPEG version: bit 19 (0=MPEG-4, 1=MPEG-2)
+	// profile: bits 17-18 (0=main, 1=LC, 2=SSR, 3=reserved)
+	// sampling freq index: bits 12-15
+	// channel config: bits 9-11
+	profile := (data[2] >> 6) & 0x03       // 2 bits
+	sampleRateIndex := (data[2] >> 2) & 0x0f // 4 bits
+	channelConfig := ((data[2] & 0x01) << 2) | ((data[3] >> 6) & 0x03) // 3 bits
+
+	// AudioSpecificConfig (ISO 14496-3):
+	// 5 bits: audioObjectType (profile + 1 for LC)
+	// 4 bits: samplingFrequencyIndex
+	// 4 bits: channelConfiguration
+	// padding
+	audioObjectType := profile + 1 // AAC-LC = 2
+	if audioObjectType > 31 {
+		audioObjectType = 2
+	}
+
+	asc := make([]byte, 2)
+	asc[0] = (audioObjectType << 3) | (sampleRateIndex >> 1)
+	asc[1] = (sampleRateIndex << 7) | (channelConfig << 3)
+	return asc
 }
 
 func parsePTS(data []byte) int64 {
@@ -905,8 +1093,6 @@ func isKeyFrame(data []byte, isVideo bool) bool {
 	if len(data) < 4 {
 		return false
 	}
-	foundSPS := false
-	foundSlice := false
 	for i := 0; i < len(data)-4; i++ {
 		if data[i] == 0 && data[i+1] == 0 {
 			nalStart := i + 2
@@ -921,21 +1107,207 @@ func isKeyFrame(data []byte, isVideo bool) bool {
 				continue
 			}
 			nalType := data[nalStart] & 0x1f
-			switch nalType {
-			case 5: // IDR slice
+			if nalType == 5 { // IDR slice
 				return true
-			case 7: // SPS
-				foundSPS = true
-			case 1, 2, 3, 4: // non-IDR slice
-				foundSlice = true
 			}
 		}
 	}
-	// Only mark as keyframe if we found an explicit IDR or SPS+slice combo
-	if foundSPS && foundSlice {
-		return true
-	}
 	return false
+}
+
+// --- buildStsd with proper codec config boxes ---
+
+// buildStsd builds the sample description box with avcC (video) or esds (audio).
+func buildStsd(cfg *remuxConfig, track *trackInfo, isVideo bool, samples []mp4Sample) []byte {
+	var entry []byte
+	if isVideo {
+		entry = buildVideoSampleEntry(cfg, track, samples)
+	} else {
+		entry = buildAudioSampleEntry(cfg, track, samples)
+	}
+
+	body := make([]byte, 8+len(entry))
+	body[0] = 0
+	binary.BigEndian.PutUint32(body[4:8], 1) // entry count
+	copy(body[8:], entry)
+	return body
+}
+
+// buildVideoSampleEntry builds an avc1/hev1 entry with avcC box inside.
+func buildVideoSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Sample) []byte {
+	codec := [4]byte{'a', 'v', 'c', '1'}
+	if cfg.videoCodec == "h265" {
+		codec = [4]byte{'h', 'e', 'v', '1'}
+	}
+
+	// Build inner avcC box
+	avcCData := track.avcConfig
+	if len(avcCData) == 0 {
+		// Fallback: try to extract from first few samples
+		for i := 0; i < len(samples) && i < 10 && len(avcCData) == 0; i++ {
+			sps, pps := extractSPSPPS(samples[i].data)
+			if len(sps) > 0 {
+				avcCData = buildAVCConfigRecord(sps, pps)
+			}
+		}
+	}
+
+	// avcC box: 8 header + data
+	avcCBoxSize := 8 + len(avcCData)
+
+	// Visual Sample Entry (ISO 14496-12):
+	// 6 bytes: reserved
+	// 2 bytes: data_reference_index
+	// 2+2+4+4 bytes: pre-defined + reserved
+	// 4+4 bytes: width, height
+	// 4+4 bytes: horiz/vert resolution
+	// 4 bytes: reserved
+	// 2 bytes: frame_count
+	// 32 bytes: compressorname
+	// 2 bytes: depth
+	// 2 bytes: pre-defined
+	// + avcC box
+	entrySize := 86 + avcCBoxSize
+	entry := make([]byte, entrySize)
+	binary.BigEndian.PutUint32(entry[0:4], uint32(entrySize))
+	copy(entry[4:8], codec[:])
+	binary.BigEndian.PutUint16(entry[10:12], 1) // data_reference_index
+	binary.BigEndian.PutUint16(entry[32:34], track.width)
+	binary.BigEndian.PutUint16(entry[34:36], track.height)
+	binary.BigEndian.PutUint32(entry[36:40], 0x00480000) // horiz resolution 72 dpi
+	binary.BigEndian.PutUint32(entry[40:44], 0x00480000) // vert resolution 72 dpi
+	binary.BigEndian.PutUint16(entry[62:64], 1)          // frame_count
+	binary.BigEndian.PutUint16(entry[82:84], 0x0018)     // depth = 24
+
+	// Write avcC box at offset 86
+	binary.BigEndian.PutUint32(entry[86:90], uint32(avcCBoxSize))
+	copy(entry[90:94], "avcC")
+	copy(entry[94:], avcCData)
+
+	return entry
+}
+
+// buildAudioSampleEntry builds an mp4a entry with esds box inside.
+func buildAudioSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Sample) []byte {
+	// Extract AudioSpecificConfig if not already available
+	aacConfig := track.aacConfig
+	if len(aacConfig) == 0 {
+		// Fallback: try to extract from first few samples
+		for i := 0; i < len(samples) && i < 10 && len(aacConfig) == 0; i++ {
+			if len(samples[i].data) > 7 {
+				aacConfig = extractADTSConfig(samples[i].data)
+			}
+		}
+	}
+	if len(aacConfig) == 0 {
+		aacConfig = []byte{0x12, 0x08} // default: AAC-LC, 44100 Hz, stereo
+	}
+
+	// esds box payload
+	esdsPayload := buildESDS(aacConfig)
+	esdsBoxSize := 8 + len(esdsPayload)
+
+	// Audio Sample Entry (ISO 14496-12):
+	// 6 bytes: reserved
+	// 2 bytes: data_reference_index
+	// 8 bytes: reserved
+	// 2 bytes: channel_count
+	// 2 bytes: sample_size
+	// 4 bytes: pre-defined
+	// 4 bytes: sample_rate (16.16 fixed point)
+	// + esds box
+	entrySize := 36 + esdsBoxSize
+	entry := make([]byte, entrySize)
+	binary.BigEndian.PutUint32(entry[0:4], uint32(entrySize))
+	copy(entry[4:8], "mp4a")
+	binary.BigEndian.PutUint16(entry[10:12], 1) // data_reference_index
+	binary.BigEndian.PutUint16(entry[16:18], 2) // channel_count (stereo)
+	binary.BigEndian.PutUint16(entry[18:20], 16) // sample_size
+
+	// Detect sample rate from AudioSpecificConfig
+	sampleRate := uint32(44100)
+	if len(aacConfig) >= 2 {
+		srIndex := ((aacConfig[0] & 0x07) << 1) | ((aacConfig[1] >> 7) & 0x01)
+		srTable := []uint32{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
+		if int(srIndex) < len(srTable) {
+			sampleRate = srTable[srIndex]
+		}
+	}
+	binary.BigEndian.PutUint32(entry[24:28], sampleRate<<16) // 16.16 fixed point
+
+	// Write esds box at offset 36
+	binary.BigEndian.PutUint32(entry[36:40], uint32(esdsBoxSize))
+	copy(entry[40:44], "esds")
+	copy(entry[44:], esdsPayload)
+
+	return entry
+}
+
+// buildESDS builds an Elementary Stream Descriptor box payload.
+func buildESDS(audioSpecificConfig []byte) []byte {
+	// esds structure:
+	// version(1) + flags(3) + ES_Descriptor
+	ascLen := len(audioSpecificConfig)
+	// ES_Descriptor tag=3, length varies
+	esDescLen := 3 + 5 + (13 + 5 + ascLen) // ES_ID(2) + flags(1) + DecoderConfigDesc + SLConfigDesc
+	// DecoderConfigDescriptor tag=4
+	decConfigLen := 13 + 5 + ascLen // objectType(1) + ... + DecoderSpecificInfo
+	// DecoderSpecificInfo tag=5
+	decSpecificLen := ascLen
+	// SLConfigDescriptor tag=6
+	slConfigLen := 1
+
+	totalLen := 4 + 2 + esDescLen // version+flags + tag+len + payload
+	buf := make([]byte, totalLen)
+	p := 0
+
+	// Box version + flags
+	buf[p] = 0; p++
+	buf[p] = 0; p++
+	buf[p] = 0; p++
+	buf[p] = 0; p++
+
+	// ES_Descriptor (tag=3)
+	buf[p] = 0x03; p++
+	buf[p] = byte(esDescLen); p++
+	// ES_ID = 1
+	buf[p] = 0x00; p++
+	buf[p] = 0x01; p++
+	// streamDependenceFlag=0, URL_Flag=0, OCRstreamFlag=0
+	buf[p] = 0x00; p++
+
+	// DecoderConfigDescriptor (tag=4)
+	buf[p] = 0x04; p++
+	buf[p] = byte(decConfigLen); p++
+	buf[p] = 0x40; p++ // objectTypeIndication = 0x40 (Audio ISO 14496-3)
+	buf[p] = 0x15; p++ // streamType=5 (Audio), upstream=0, reserved=1
+	// bufferSizeDB (3 bytes)
+	buf[p] = 0x00; p++
+	buf[p] = 0x00; p++
+	buf[p] = 0x00; p++
+	// maxBitrate
+	buf[p] = 0x00; p++
+	buf[p] = 0x01; p++ // ~65536 bps (rough estimate)
+	buf[p] = 0x00; p++
+	buf[p] = 0x00; p++
+	// avgBitrate
+	buf[p] = 0x00; p++
+	buf[p] = 0x00; p++
+	buf[p] = 0x00; p++
+	buf[p] = 0x00; p++
+
+	// DecoderSpecificInfo (tag=5)
+	buf[p] = 0x05; p++
+	buf[p] = byte(decSpecificLen); p++
+	copy(buf[p:], audioSpecificConfig)
+	p += ascLen
+
+	// SLConfigDescriptor (tag=6)
+	buf[p] = 0x06; p++
+	buf[p] = byte(slConfigLen); p++
+	buf[p] = 0x02; p++ // predefined (MP4)
+
+	return buf[:p]
 }
 
 // --- Box helpers (fMP4 building blocks, used by tests and mux.go) ---
@@ -1125,39 +1497,3 @@ func buildDref() []byte {
 	copy(body[8:], urlEntry)
 	return body
 }
-
-// buildStsd builds the sample description box.
-func buildStsd(cfg *remuxConfig, track *trackInfo, isVideo bool) []byte {
-	var entry []byte
-	if isVideo {
-		codec := "avc1"
-		if cfg.videoCodec == "h265" {
-			codec = "hev1"
-		}
-		entry = make([]byte, 86)
-		binary.BigEndian.PutUint32(entry[0:4], 86)
-		copy(entry[4:8], codec)
-		binary.BigEndian.PutUint16(entry[10:12], 1)
-		binary.BigEndian.PutUint16(entry[32:34], track.width)
-		binary.BigEndian.PutUint16(entry[34:36], track.height)
-		binary.BigEndian.PutUint32(entry[36:40], 0x00480000)
-		binary.BigEndian.PutUint32(entry[40:44], 0x00480000)
-		binary.BigEndian.PutUint16(entry[62:64], 1)
-	} else {
-		codec := "mp4a"
-		entry = make([]byte, 44)
-		binary.BigEndian.PutUint32(entry[0:4], 44)
-		copy(entry[4:8], codec)
-		binary.BigEndian.PutUint16(entry[10:12], 1)
-		binary.BigEndian.PutUint16(entry[16:18], 2)
-		binary.BigEndian.PutUint16(entry[18:20], 16)
-		binary.BigEndian.PutUint32(entry[24:28], 0xac440000) // 44100 Hz
-	}
-	body := make([]byte, 8+len(entry))
-	body[0] = 0
-	binary.BigEndian.PutUint32(body[4:8], 1)
-	copy(body[8:], entry)
-	return body
-}
-
-

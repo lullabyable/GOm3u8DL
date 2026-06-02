@@ -310,7 +310,7 @@ func TestBuildTraf(t *testing.T) {
 func TestBuildStsdVideo(t *testing.T) {
 	cfg := &remuxConfig{videoCodec: "h264", timescale: 90000}
 	track := &trackInfo{width: 1920, height: 1080}
-	stsd := buildStsd(cfg, track, true)
+	stsd := buildStsd(cfg, track, true, nil)
 	if len(stsd) < 8 {
 		t.Fatalf("stsd too small")
 	}
@@ -324,7 +324,7 @@ func TestBuildStsdVideo(t *testing.T) {
 func TestBuildStsdAudio(t *testing.T) {
 	cfg := &remuxConfig{audioCodec: "aac", timescale: 90000}
 	track := &trackInfo{}
-	stsd := buildStsd(cfg, track, false)
+	stsd := buildStsd(cfg, track, false, nil)
 	if len(stsd) < 8 {
 		t.Fatalf("stsd too small")
 	}
