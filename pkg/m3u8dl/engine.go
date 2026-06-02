@@ -316,17 +316,30 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	// 4. Merge segments (skip if MergeModeNo)
 	outputPath := buildOutputPath(req)
 
-	if req.MergeMode == model.MergeModeNo {
+	// Auto-detect segment format and adjust merge mode if needed
+	mergeMode := req.MergeMode
+	if mergeMode != model.MergeModeNo && mergeMode != model.MergeModeFFmpeg && len(segmentPaths) > 0 {
+		detected := detectSegmentFormat(segmentPaths[0])
+		if detected == "fmp4" && mergeMode == model.MergeModeTS2MP4 {
+			emitLog(LogInfo, "Detected fMP4 segments, switching to fmp4 merge mode")
+			mergeMode = model.MergeModeFMP4
+		} else if detected == "ts" && mergeMode == model.MergeModeFMP4 {
+			emitLog(LogInfo, "Detected TS segments, switching to ts2mp4 merge mode")
+			mergeMode = model.MergeModeTS2MP4
+		}
+	}
+
+	if mergeMode == model.MergeModeNo {
 		emitLog(LogInfo, fmt.Sprintf("Download only mode — %d segments saved to: %s", len(segmentPaths), tempDir))
 	} else {
 		emitStatus(model.TaskStatusMerging)
-		emitLog(LogInfo, fmt.Sprintf("Merging %d segments (%s)...", len(segmentPaths), mergeModeStr(req.MergeMode)))
+		emitLog(LogInfo, fmt.Sprintf("Merging %d segments (%s)...", len(segmentPaths), mergeModeStr(mergeMode)))
 
 		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 			return fmt.Errorf("create output dir: %w", err)
 		}
 
-		switch req.MergeMode {
+		switch mergeMode {
 		case model.MergeModeBinary:
 			// Prepend init segment if present
 			if stream.Playlist.MediaInit != nil {
@@ -665,4 +678,46 @@ func (e *Engine) fetchKey(ctx context.Context, keyURL string, headers map[string
 	}
 
 	return key, nil
+}
+
+// detectSegmentFormat reads the first bytes of a file to determine if it's
+// TS (MPEG-TS sync byte 0x47) or fMP4 (ftyp/moof/moov box).
+func detectSegmentFormat(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return "unknown"
+	}
+	defer f.Close()
+
+	buf := make([]byte, 32)
+	n, err := f.Read(buf)
+	if err != nil || n == 0 {
+		return "unknown"
+	}
+
+	// TS: sync byte 0x47 at offset 0
+	if buf[0] == 0x47 {
+		return "ts"
+	}
+
+	// fMP4: check for ftyp/moof/moov box type at offset 4
+	if n >= 8 {
+		boxType := string(buf[4:8])
+		switch boxType {
+		case "ftyp", "moof", "moov", "styp", "sidx":
+			return "fmp4"
+		}
+	}
+
+	// Scan for TS sync byte in case of leading garbage
+	for i := 0; i < n && i < 188*3; i++ {
+		if buf[i] == 0x47 {
+			// Check if next sync byte is 188 bytes later
+			if i+188 < n && buf[i+188] == 0x47 {
+				return "ts"
+			}
+		}
+	}
+
+	return "unknown"
 }
