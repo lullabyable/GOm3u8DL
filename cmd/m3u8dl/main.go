@@ -64,6 +64,8 @@ func nextSpinner() string {
 }
 
 func main() {
+	enableWindowsVT()
+
 	var (
 		url         string
 		outputDir   string
@@ -643,7 +645,11 @@ func renderProgress(desc string, e m3u8dl.ProgressEvent) {
 		spin)
 
 	// Use \r to overwrite the same line (no trailing newline)
-	fmt.Fprintf(os.Stderr, "\r%s%s", eraseLine, line)
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(os.Stderr, "\r%s", line)
+	} else {
+		fmt.Fprintf(os.Stderr, "\r%s%s", eraseLine, line)
+	}
 }
 
 // renderProgressDone shows the final completed state (bar fully filled, green).
@@ -664,12 +670,21 @@ func renderProgressDone(desc string, e m3u8dl.ProgressEvent) {
 		"✓")
 
 	// Overwrite current line then print newline to commit
-	fmt.Fprintf(os.Stderr, "\r%s%s\n", eraseLine, line)
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(os.Stderr, "\r%s\n", line)
+	} else {
+		fmt.Fprintf(os.Stderr, "\r%s%s\n", eraseLine, line)
+	}
 }
 
 // clearProgress erases the current progress line.
 func clearProgress() {
-	fmt.Fprintf(os.Stderr, "\r%s", eraseLine)
+	if runtime.GOOS == "windows" {
+		// Fallback: overwrite with spaces then carriage return
+		fmt.Fprintf(os.Stderr, "\r%s\r", "                                                                               ")
+	} else {
+		fmt.Fprintf(os.Stderr, "\r%s", eraseLine)
+	}
 }
 
 

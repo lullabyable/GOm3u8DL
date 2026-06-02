@@ -414,7 +414,7 @@ func buildStblFull(cfg *remuxConfig, track *trackInfo, trackID uint32, isVideo b
 	}
 
 	// stsc (sample-to-chunk) — all samples in one chunk
-	stsc := buildStsc()
+	stsc := buildStsc(len(samples))
 	stscBox := make([]byte, 8+len(stsc))
 	binary.BigEndian.PutUint32(stscBox[0:4], uint32(len(stscBox)))
 	copy(stscBox[4:8], "stsc")
@@ -493,13 +493,13 @@ func buildStss(samples []mp4Sample) []byte {
 }
 
 // buildStsc creates the sample-to-chunk table (all samples in one chunk).
-func buildStsc() []byte {
+func buildStsc(sampleCount int) []byte {
 	body := make([]byte, 4+4+12)
 	body[0] = 0
-	binary.BigEndian.PutUint32(body[4:8], 1) // entry count
-	binary.BigEndian.PutUint32(body[8:12], 1)  // first chunk
-	binary.BigEndian.PutUint32(body[12:16], 0) // samples_per_chunk
-	binary.BigEndian.PutUint32(body[16:20], 1) // sample description index
+	binary.BigEndian.PutUint32(body[4:8], 1)                       // entry count
+	binary.BigEndian.PutUint32(body[8:12], 1)                       // first chunk
+	binary.BigEndian.PutUint32(body[12:16], uint32(sampleCount))    // samples_per_chunk
+	binary.BigEndian.PutUint32(body[16:20], 1)                      // sample description index
 	return body
 }
 
@@ -905,6 +905,8 @@ func isKeyFrame(data []byte, isVideo bool) bool {
 	if len(data) < 4 {
 		return false
 	}
+	foundSPS := false
+	foundSlice := false
 	for i := 0; i < len(data)-4; i++ {
 		if data[i] == 0 && data[i+1] == 0 {
 			nalStart := i + 2
@@ -919,12 +921,21 @@ func isKeyFrame(data []byte, isVideo bool) bool {
 				continue
 			}
 			nalType := data[nalStart] & 0x1f
-			if nalType == 5 || nalType == 7 || nalType == 8 {
+			switch nalType {
+			case 5: // IDR slice
 				return true
+			case 7: // SPS
+				foundSPS = true
+			case 1, 2, 3, 4: // non-IDR slice
+				foundSlice = true
 			}
 		}
 	}
-	return true
+	// Only mark as keyframe if we found an explicit IDR or SPS+slice combo
+	if foundSPS && foundSlice {
+		return true
+	}
+	return false
 }
 
 // --- Box helpers (fMP4 building blocks, used by tests and mux.go) ---
