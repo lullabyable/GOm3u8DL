@@ -85,7 +85,7 @@ func main() {
 	flag.StringVar(&outputDir, "save-dir", "./downloads", "Output directory")
 	flag.StringVar(&tmpDir, "tmp-dir", "", "Temp directory for downloads (default: {save-dir}/)")
 	flag.StringVar(&saveName, "save-name", "", "Output filename (without extension)")
-	flag.IntVar(&concurrency, "concurrency", 8, "Segment download concurrency")
+	flag.IntVar(&concurrency, "thread-num", 8, "Segment download concurrency")
 	flag.Int64Var(&maxSpeed, "max-speed", 0, "Max download speed in bytes/sec (0=unlimited)")
 	flag.StringVar(&mergeMode, "merge", "ts2mp4", "Merge mode: binary, ts2mp4, fmp4, ffmpeg, no")
 	flag.StringVar(&ffmpegDir, "ffmpeg-dir", "", "Path to ffmpeg binary or directory")
@@ -149,7 +149,7 @@ func main() {
 		} else {
 			fmt.Printf("%s[info]%s Config loaded: %s\n", cyan, reset, cfgPath)
 			// Apply config defaults — only for flags NOT explicitly set via CLI
-			if !cliFlags["concurrency"] && cfg.ThreadNum > 0 {
+			if !cliFlags["thread-num"] && cfg.ThreadNum > 0 {
 				concurrency = cfg.ThreadNum
 			}
 			if !cliFlags["max-speed"] && cfg.MaxSpeed > 0 {
@@ -319,7 +319,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 	fmt.Printf("    -save-dir <dir>       Output directory     %s(default: ./downloads)%s\n", grey, reset)
 	fmt.Printf("    -tmp-dir <dir>        Temp directory       %s(default: {save-dir}/)%s\n", grey, reset)
 	fmt.Printf("    -save-name <name>     Output filename      %s(default: auto)%s\n", grey, reset)
-	fmt.Printf("    -concurrency <n>      Thread count         %s(default: 8)%s\n", grey, reset)
+	fmt.Printf("    -thread-num <n>       Thread count         %s(default: 8)%s\n", grey, reset)
 	fmt.Printf("    -max-speed <n>        Speed limit          %s(e.g. 2M, 500K, default: unlimited)%s\n", grey, reset)
 	fmt.Printf("    -merge <mode>         Merge mode           %s(binary/ts2mp4/fmp4/ffmpeg/no, default: ts2mp4)%s\n", grey, reset)
 	fmt.Printf("    -ffmpeg-dir <path>    ffmpeg path          %s(binary or directory)%s\n", grey, reset)
@@ -376,7 +376,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 		fs.StringVar(&outputDir, "save-dir", "./downloads", "")
 		fs.StringVar(&tmpDir, "tmp-dir", "", "")
 		fs.StringVar(&saveName, "save-name", "", "")
-		fs.IntVar(&concurrency, "concurrency", 8, "")
+		fs.IntVar(&concurrency, "thread-num", 8, "")
 		fs.Int64Var(&maxSpeed, "max-speed", 0, "")
 		fs.StringVar(&mergeMode, "merge", "ts2mp4", "")
 		fs.StringVar(&ffmpegDir, "ffmpeg-dir", "", "")

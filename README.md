@@ -71,7 +71,7 @@ go install github.com/lullabyable/GOm3u8DL/cmd/m3u8dl@latest
 
   Usage: <URL> [flags]    (flags are optional, press Enter for defaults)
 
-  ▶ https://example.com/video/index.m3u8 -save-dir ./output -concurrency 16
+  ▶ https://example.com/video/index.m3u8 -save-dir ./output -thread-num 16
 ```
 
 只输入 URL 即可，其余参数使用默认值：
@@ -188,7 +188,7 @@ Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `-concurrency` | `8` | 分段下载并发数 |
+| `-thread-num` | `8` | 分段下载并发数 |
 | `-max-speed` | `0`（不限速） | 最大下载速度（bytes/sec），支持人类可读格式如 `2M`、`500K` |
 | `-merge` | `ts2mp4` | 合并模式，可选：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并） |
 | `-ffmpeg-dir` | 空 | ffmpeg 路径（可执行文件或目录），`-merge ffmpeg` 时自动查找 |
