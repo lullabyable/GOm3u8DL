@@ -1188,11 +1188,11 @@ func buildVideoSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Samp
 }
 
 // buildAudioSampleEntry builds an mp4a entry with esds box inside.
+// Layout matches FFmpeg mov_write_audio_tag and ISO 14496-12 AudioSampleEntry.
 func buildAudioSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Sample) []byte {
 	// Extract AudioSpecificConfig if not already available
 	aacConfig := track.aacConfig
 	if len(aacConfig) == 0 {
-		// Fallback: try to extract from first few samples
 		for i := 0; i < len(samples) && i < 10 && len(aacConfig) == 0; i++ {
 			if len(samples[i].data) > 7 {
 				aacConfig = extractADTSConfig(samples[i].data)
@@ -1203,26 +1203,30 @@ func buildAudioSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Samp
 		aacConfig = []byte{0x12, 0x08} // default: AAC-LC, 44100 Hz, stereo
 	}
 
-	// esds box payload
 	esdsPayload := buildESDS(aacConfig)
 	esdsBoxSize := 8 + len(esdsPayload)
 
-	// AudioSampleEntry layout (ISO 14496-12 Table 8-3 + Apple QuickTime):
+	// AudioSampleEntry layout (ISO 14496-12 + QuickTime):
 	// [0:4]   size (uint32)
 	// [4:8]   type "mp4a"
-	// [8:10]  channel_count (uint16)
-	// [10:12] sample_size (uint16)
-	// [12:14] pre_defined (uint16)
-	// [14:16] reserved (uint16)
-	// [16:20] sample_rate (uint32, 16.16 fixed point)
-	// [20:]   esds box
-	entrySize := 20 + esdsBoxSize
+	// [8:14]  reserved (6 bytes, from SampleEntry)
+	// [14:16] data_reference_index (uint16)
+	// [16:18] version (uint16) = 0
+	// [18:20] revision (uint16) = 0
+	// [20:24] vendor (uint32) = 0
+	// [24:26] channel_count (uint16)
+	// [26:28] sample_size (uint16)
+	// [28:30] pre_defined (uint16) = 0
+	// [30:32] reserved (uint16) = 0
+	// [32:36] sample_rate (uint32, 16.16 fixed point)
+	// [36:]   esds box
+	entrySize := 36 + esdsBoxSize
 	entry := make([]byte, entrySize)
 	binary.BigEndian.PutUint32(entry[0:4], uint32(entrySize))
 	copy(entry[4:8], "mp4a")
-	binary.BigEndian.PutUint16(entry[8:10], 2)   // channel_count (stereo)
-	binary.BigEndian.PutUint16(entry[10:12], 16)  // sample_size (16 bits)
-	// entry[12:16] = pre_defined + reserved = 0
+	binary.BigEndian.PutUint16(entry[14:16], 1) // data_reference_index
+	binary.BigEndian.PutUint16(entry[24:26], 2) // channel_count (stereo)
+	binary.BigEndian.PutUint16(entry[26:28], 16) // sample_size (16 bits)
 
 	// Detect sample rate from AudioSpecificConfig
 	sampleRate := uint32(44100)
@@ -1233,12 +1237,12 @@ func buildAudioSampleEntry(cfg *remuxConfig, track *trackInfo, samples []mp4Samp
 			sampleRate = srTable[srIndex]
 		}
 	}
-	binary.BigEndian.PutUint32(entry[16:20], sampleRate<<16) // 16.16 fixed point
+	binary.BigEndian.PutUint32(entry[32:36], sampleRate<<16) // 16.16 fixed point
 
-	// Write esds box at offset 20
-	binary.BigEndian.PutUint32(entry[20:24], uint32(esdsBoxSize))
-	copy(entry[24:28], "esds")
-	copy(entry[28:], esdsPayload)
+	// Write esds box at offset 36
+	binary.BigEndian.PutUint32(entry[36:40], uint32(esdsBoxSize))
+	copy(entry[40:44], "esds")
+	copy(entry[44:], esdsPayload)
 
 	return entry
 }
