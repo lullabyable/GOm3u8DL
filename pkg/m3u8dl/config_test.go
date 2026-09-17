@@ -23,8 +23,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.SaveDir != "/downloads" {
 		t.Errorf("SaveDir = %q, want %q", cfg.SaveDir, "/downloads")
 	}
-	if cfg.Merge != "ts2mp4" {
-		t.Errorf("Merge = %q, want %q", cfg.Merge, "ts2mp4")
+	if cfg.Merge != "ffmpeg" {
+		t.Errorf("Merge = %q, want %q", cfg.Merge, "ffmpeg")
 	}
 	if cfg.Headers == nil {
 		t.Error("Headers should not be nil")

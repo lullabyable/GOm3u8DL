@@ -57,8 +57,10 @@ func TestTaskManagerSubmitAndWait(t *testing.T) {
 		if r.Status != model.TaskStatusDone {
 			t.Errorf("task %s status = %s, want done", r.TaskID, r.Status)
 		}
-		if r.Duration <= 0 {
-			t.Errorf("task %s duration = %f, want > 0", r.TaskID, r.Duration)
+		// An immediate no-op may take zero measurable ticks on Windows.
+		// Keep the positive-duration assertion for the task that actually waits.
+		if r.Duration < 0 || (r.TaskID == "task1" && r.Duration == 0) {
+			t.Errorf("task %s duration = %f, want nonnegative (positive for task1)", r.TaskID, r.Duration)
 		}
 	}
 }

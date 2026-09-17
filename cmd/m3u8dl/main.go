@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -24,7 +23,7 @@ import (
 )
 
 var (
-	version = "1.0.0"
+	version = "0.2.0"
 	commit  = "none"
 )
 
@@ -91,7 +90,7 @@ func main() {
 	flag.StringVar(&saveName, "save-name", "", "Output filename (without extension)")
 	flag.IntVar(&concurrency, "thread-num", 8, "Segment download concurrency")
 	flag.Int64Var(&maxSpeed, "max-speed", 0, "Max download speed in bytes/sec (0=unlimited)")
-	flag.StringVar(&mergeMode, "merge", "ts2mp4", "Merge mode: binary, ts2mp4, fmp4, ffmpeg, no")
+	flag.StringVar(&mergeMode, "merge", "ffmpeg", "Merge mode: ffmpeg (recommended), binary, ts2mp4/fmp4 (experimental), no")
 	flag.StringVar(&ffmpegDir, "ffmpeg-dir", "", "Path to ffmpeg binary or directory")
 	flag.Var(&headers, "H", "HTTP header (repeatable, format: Key: Value)")
 	flag.Var(&keys, "key", "Decryption key in kid:key hex format (repeatable)")
@@ -181,7 +180,7 @@ func main() {
 			if !cliFlags["tmp-dir"] && cfg.TmpDir != "" {
 				tmpDir = cfg.TmpDir
 			}
-			if !cliFlags["del-after-done"] && cfg.DelAfterDone {
+			if !cliFlags["del-after-done"] {
 				delAfterDone = cfg.DelAfterDone
 			}
 			// Merge headers: config provides base, CLI overrides same keys.
@@ -219,6 +218,9 @@ func main() {
 	}
 
 	mode := parseMergeMode(mergeMode)
+	if mode == model.MergeModeTS2MP4 || mode == model.MergeModeFMP4 {
+		fmt.Printf("%s[warn]%s 纯 Go 合并为实验性模式，复杂媒体建议使用 -merge ffmpeg\n", yellow, reset)
+	}
 
 	// Validate ffmpeg availability if merge mode is ffmpeg
 	var ffmpegPath string
@@ -238,12 +240,16 @@ func main() {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
-		<-sigCh
+		select {
+		case <-sigCh:
+		case <-ctx.Done():
+			return
+		}
 		fmt.Print(showCur) // restore cursor on exit
 		fmt.Fprintf(os.Stderr, "\n%s[warn]%s 用户已取消。\n", yellow, reset)
 		cancel()
-		os.Exit(0)
 	}()
 
 	// ── Banner ──────────────────────────────────────────────────────
@@ -338,7 +344,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 	mergeMode string, ffmpegDir string, headers stringSlice, keys stringSlice, autoSub, subOnly bool, delAfterDone bool, svSelect string) {
 
 	reader := bufio.NewReader(os.Stdin)
-	mergeMode = "ts2mp4"
+	mergeMode = "ffmpeg"
 	delAfterDone = true
 
 	fmt.Printf("\n")
@@ -353,7 +359,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 	fmt.Printf("    -save-name <name>     输出文件名         %s(默认: 自动生成)%s\n", grey, reset)
 	fmt.Printf("    -thread-num <n>       线程数             %s(默认: 8)%s\n", grey, reset)
 	fmt.Printf("    -max-speed <n>        限速               %s(如 2M, 500K, 默认: 不限)%s\n", grey, reset)
-	fmt.Printf("    -merge <mode>         合并模式           %s(binary/ts2mp4/fmp4/ffmpeg/no, 默认: ts2mp4)%s\n", grey, reset)
+	fmt.Printf("    -merge <mode>         合并模式           %s(binary/ts2mp4/fmp4/ffmpeg/no, 默认: ffmpeg)%s\n", grey, reset)
 	fmt.Printf("    -ffmpeg-dir <path>    ffmpeg 路径        %s(可执行文件或目录)%s\n", grey, reset)
 	fmt.Printf("    -H <header>           HTTP 请求头        %s(可重复, Key: Value)%s\n", grey, reset)
 	fmt.Printf("    -key <kid:key>        解密密钥           %s(可重复, 十六进制)%s\n", grey, reset)
@@ -410,7 +416,7 @@ func interactiveMode() (url, outputDir, tmpDir, saveName string, concurrency int
 		fs.StringVar(&saveName, "save-name", "", "")
 		fs.IntVar(&concurrency, "thread-num", 8, "")
 		fs.Int64Var(&maxSpeed, "max-speed", 0, "")
-		fs.StringVar(&mergeMode, "merge", "ts2mp4", "")
+		fs.StringVar(&mergeMode, "merge", "ffmpeg", "")
 		fs.StringVar(&ffmpegDir, "ffmpeg-dir", "", "")
 		fs.Var(&headers, "H", "")
 		fs.Var(&keys, "key", "")
@@ -925,6 +931,10 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	var lastProgressTime time.Time
 	handler := m3u8dl.EventHandlerFunc{
 		OnProgressFn: func(e m3u8dl.ProgressEvent) {
+			if e.Phase != "" {
+				renderMergeProgress(e)
+				return
+			}
 			now := time.Now()
 			if now.Sub(lastProgressTime) < 200*time.Millisecond {
 				return
@@ -1029,12 +1039,14 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 	case model.MergeModeFMP4:
 		muxErr = merge.MuxFMP4FromSegments(videoResult.InitPath, audioResult.InitPath,
 			videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
-	case model.MergeModeFFmpeg:
-		vm := filepath.Join(rootTmp, "video_merged.ts")
-		am := filepath.Join(rootTmp, "audio_merged.ts")
-		merge.BinaryMerge(videoResult.SegmentPaths, vm)
-		merge.BinaryMerge(audioResult.SegmentPaths, am)
-		muxErr = merge.FFmpegMuxAV(vm, am, outputPath, ffmpegPath)
+	case model.MergeModeDefault, model.MergeModeFFmpeg:
+		muxErr = engine.MergeDownloadedWithFFmpeg(ctx, model.DownloadRequest{
+			OutputDir: outputDir, SaveName: saveName, FFmpegPath: ffmpegPath,
+		}, []m3u8dl.DownloadResult{*videoResult, *audioResult}, m3u8dl.EventHandlerFunc{
+			OnProgressFn:     renderMergeProgress,
+			OnStatusChangeFn: handler.OnStatusChangeFn,
+			OnLogFn:          handler.OnLogFn,
+		})
 	default:
 		if isTS {
 			muxErr = merge.MuxSeparateTSStreams(videoResult.SegmentPaths, audioResult.SegmentPaths, outputPath)
@@ -1044,15 +1056,17 @@ func downloadSeparateStreams(ctx context.Context, engine *m3u8dl.Engine, url str
 		}
 	}
 
-	if delAfterDone {
-		os.RemoveAll(rootTmp)
-	}
-
+	clearProgress()
 	if muxErr != nil {
 		fmt.Fprintf(os.Stderr, "%s[error]%s 混流失败: %v\n", red, reset, muxErr)
 		os.Exit(1)
 	}
 
+	if delAfterDone {
+		if err := os.RemoveAll(rootTmp); err != nil {
+			fmt.Fprintf(os.Stderr, "清理临时目录失败: %v\n", err)
+		}
+	}
 	printDone(outputPath)
 }
 
@@ -1085,6 +1099,10 @@ func downloadSingleStream(ctx context.Context, engine *m3u8dl.Engine, url string
 
 	handler := m3u8dl.EventHandlerFunc{
 		OnProgressFn: func(e m3u8dl.ProgressEvent) {
+			if e.Phase != "" {
+				renderMergeProgress(e)
+				return
+			}
 			now := time.Now()
 			if now.Sub(lastProgressTime) < 200*time.Millisecond {
 				return
@@ -1175,7 +1193,7 @@ func parseMergeMode(s string) model.MergeMode {
 	case "no":
 		return model.MergeModeNo
 	default:
-		return model.MergeModeTS2MP4
+		return model.MergeModeFFmpeg
 	}
 }
 
@@ -1458,43 +1476,14 @@ func (s *stringSlice) Set(v string) error {
 // findFFmpeg locates the ffmpeg binary. Search order:
 // 1. User-specified path (from -ffmpeg-dir or config)
 // 2. System PATH (just run "ffmpeg")
-// If not found, prompts the user to enter the path.
+// Missing FFmpeg fails before downloading; noninteractive calls never prompt.
 func findFFmpeg(userPath string) string {
-	// 1. User-specified path
-	if userPath != "" {
-		if info, err := os.Stat(userPath); err == nil && !info.IsDir() {
-			return userPath
-		}
-		if candidate := ffmpegInDir(userPath); candidate != "" {
-			return candidate
-		}
-		fmt.Printf("  %s[warn]%s 未找到 ffmpeg 路径: %s\n", yellow, reset, userPath)
+	path, err := merge.FindFFmpeg(userPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s[error]%s %v\n", red, reset, err)
+		os.Exit(1)
 	}
-
-	// 2. System PATH
-	if _, err := exec.LookPath("ffmpeg"); err == nil {
-		return "ffmpeg"
-	}
-
-	// 3. Prompt user
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		fmt.Printf("  %s[warn]%s 在 PATH 中未找到 ffmpeg\n", yellow, reset)
-		fmt.Printf("  %s▶%s Enter ffmpeg path (or install it and press Enter to retry): ", green, reset)
-		line, _ := reader.ReadString('\n')
-		line = strings.TrimSpace(line)
-		if line == "" {
-			// Retry PATH check
-			if _, err := exec.LookPath("ffmpeg"); err == nil {
-				return "ffmpeg"
-			}
-			continue
-		}
-		if _, err := os.Stat(line); err == nil {
-			return line
-		}
-		fmt.Printf("  %s[error]%s 文件未找到: %s\n", red, reset, line)
-	}
+	return path
 }
 
 func ffmpegInDir(dir string) string {

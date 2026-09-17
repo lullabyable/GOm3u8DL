@@ -133,7 +133,7 @@ func TestDownloadSegmentsHTTP(t *testing.T) {
 
 func TestSegmentPath(t *testing.T) {
 	path := SegmentPath("/tmp/test", 42)
-	want := "/tmp/test/seg_42.ts"
+	want := filepath.Join("/tmp/test", "seg_42.ts")
 	if path != want {
 		t.Errorf("SegmentPath = %q, want %q", path, want)
 	}

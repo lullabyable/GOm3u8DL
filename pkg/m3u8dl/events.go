@@ -14,10 +14,10 @@ type EventHandler interface {
 // EventHandlerFunc provides a functional alternative to EventHandler
 // so consumers don't need to implement every method.
 type EventHandlerFunc struct {
-	OnProgressFn    func(ProgressEvent)
+	OnProgressFn     func(ProgressEvent)
 	OnStatusChangeFn func(StatusEvent)
-	OnLogFn         func(LogEvent)
-	OnStreamInfoFn  func([]model.StreamInfo)
+	OnLogFn          func(LogEvent)
+	OnStreamInfoFn   func([]model.StreamInfo)
 }
 
 func (f EventHandlerFunc) OnProgress(e ProgressEvent) {
@@ -46,16 +46,20 @@ func (f EventHandlerFunc) OnStreamInfo(s []model.StreamInfo) {
 
 // ProgressEvent is emitted frequently during download (multiple times per second).
 type ProgressEvent struct {
-	TaskID       string
-	Total        int64   // total bytes
-	Downloaded   int64   // bytes downloaded
-	Speed        int64   // current speed bytes/sec
-	AvgSpeed     int64   // average speed
-	Segments     int     // total segments
-	SegmentsDone int     // completed segments
-	Percent      float64 // 0.0 ~ 100.0
-	ETA          float64 // estimated seconds remaining
-	Elapsed      float64 // seconds elapsed
+	TaskID        string
+	Phase         string  // empty/download, preparing, remuxing, finalizing, done
+	MediaTime     float64 // processed media seconds during merge
+	MediaDuration float64 // expected duration; zero means unknown
+	MergeSpeed    string  // FFmpeg speed (e.g. 12.3x)
+	Total         int64   // total bytes
+	Downloaded    int64   // bytes downloaded
+	Speed         int64   // current speed bytes/sec
+	AvgSpeed      int64   // average speed
+	Segments      int     // total segments
+	SegmentsDone  int     // completed segments
+	Percent       float64 // 0.0 ~ 100.0; -1 means unknown during merge
+	ETA           float64 // estimated seconds remaining
+	Elapsed       float64 // seconds elapsed
 }
 
 // StatusEvent is emitted when task state changes.

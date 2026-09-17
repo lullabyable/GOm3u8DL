@@ -185,7 +185,23 @@ func (e *Engine) GetStreams(ctx context.Context, url string, headers map[string]
 
 // Download downloads the specified stream.
 // Events are delivered via the handler callback.
-func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handler EventHandler) error {
+func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handler EventHandler) (retErr error) {
+	if req.MergeMode == model.MergeModeDefault {
+		req.MergeMode = model.MergeModeFFmpeg
+	}
+	defer func() {
+		if retErr != nil && handler != nil {
+			handler.OnStatusChange(StatusEvent{TaskID: req.SaveName, Status: failureStatus(retErr), Error: retErr})
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if req.MergeMode == model.MergeModeFFmpeg {
+		if _, err := merge.FindFFmpeg(req.FFmpegPath); err != nil {
+			return err
+		}
+	}
 	startTime := time.Now()
 
 	// Helper to emit events
@@ -244,7 +260,6 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 
 	// 2. Fetch encryption keys if needed
 	if err := e.fetchEncryptionKeys(ctx, stream.Playlist, req.Headers); err != nil {
-		emitStatus(model.TaskStatusFailed)
 		return fmt.Errorf("获取解密密钥失败: %w", err)
 	}
 
@@ -269,9 +284,14 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	if req.DelAfterDone && req.MergeMode != model.MergeModeNo {
-		defer func() { _ = downloader.CleanupTemp(tempDir) }()
-	}
+	// Never delete source segments on download, merge, or cancellation failure.
+	defer func() {
+		if retErr == nil && req.DelAfterDone && req.MergeMode != model.MergeModeNo {
+			if err := cleanupMergedTemp(tempDir, buildOutputPath(req)); err != nil {
+				emitLog(LogWarn, fmt.Sprintf("输出已完成，但清理临时目录失败: %v", err))
+			}
+		}
+	}()
 
 	// 3. Download segments using Manager
 	emitStatus(model.TaskStatusDownloading)
@@ -309,7 +329,6 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 
 	segmentPaths, err := mgr.DownloadSegments(ctx, stream.Playlist, tempDir)
 	if err != nil {
-		emitStatus(model.TaskStatusFailed)
 		return fmt.Errorf("下载分段失败: %w", err)
 	}
 
@@ -364,18 +383,17 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 			}
 			err = merge.FMP4Merge(initPath, segmentPaths, outputPath)
 		case model.MergeModeFFmpeg:
-			ffmpegPath := req.FFmpegPath
-			if ffmpegPath == "" {
-				ffmpegPath = "ffmpeg"
+			emitLog(LogInfo, "使用 FFmpeg 重封装 (stream copy，不重新编码)")
+			initPath := ""
+			if stream.Playlist.MediaInit != nil {
+				initPath = downloader.SegmentPath(tempDir, -1)
 			}
-			emitLog(LogInfo, fmt.Sprintf("使用 ffmpeg 合并 (%s)", ffmpegPath))
-			err = merge.FFmpegMerge(segmentPaths, outputPath, ffmpegPath)
+			err = runFFmpegMerge(ctx, req, []DownloadResult{{InitPath: initPath, SegmentPaths: segmentPaths, Playlist: stream.Playlist}}, handler)
 		default:
-			err = merge.BinaryMerge(segmentPaths, outputPath)
+			err = fmt.Errorf("unsupported merge mode: %d", mergeMode)
 		}
 
 		if err != nil {
-			emitStatus(model.TaskStatusFailed)
 			return fmt.Errorf("合并失败: %w", err)
 		}
 	}
@@ -385,7 +403,7 @@ func (e *Engine) Download(ctx context.Context, req model.DownloadRequest, handle
 	emitStatus(model.TaskStatusDone)
 	emitLog(LogInfo, fmt.Sprintf("完成! 输出: %s (%.1fs)", outputPath, duration))
 
-	if handler != nil {
+	if handler != nil && req.MergeMode != model.MergeModeFFmpeg {
 		handler.OnProgress(ProgressEvent{
 			TaskID:       req.SaveName,
 			Segments:     len(allSegments),
@@ -570,7 +588,7 @@ func buildOutputPath(req model.DownloadRequest) string {
 		return filepath.Join(dir, name+".ts")
 	case model.MergeModeTS2MP4, model.MergeModeFMP4:
 		return filepath.Join(dir, name+".mp4")
-	case model.MergeModeFFmpeg:
+	case model.MergeModeDefault, model.MergeModeFFmpeg:
 		return filepath.Join(dir, name+".mp4")
 	default:
 		return filepath.Join(dir, name+".ts")
@@ -585,7 +603,7 @@ func mergeModeStr(m model.MergeMode) string {
 		return "ts2mp4"
 	case model.MergeModeFMP4:
 		return "fmp4"
-	case model.MergeModeFFmpeg:
+	case model.MergeModeDefault, model.MergeModeFFmpeg:
 		return "ffmpeg"
 	case model.MergeModeNo:
 		return "no (download only)"

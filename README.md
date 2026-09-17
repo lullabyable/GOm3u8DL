@@ -1,13 +1,13 @@
 # GOm3u8DL
 
-> 纯 Go 实现的流媒体下载器 SDK + CLI，重写自 [nilaoda/N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE)
+> Go 下载引擎 + FFmpeg 媒体重封装的 SDK / CLI，重写自 [nilaoda/N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE)
 
 跨平台流媒体下载工具，支持 **HLS (M3U8)** / **DASH (MPD)** / **MSS (ISM)** 三种协议，具备分段下载、解密、合并、字幕处理、直播录制等完整能力。
 
 ## 特性
 
 - 🔑 **AES-128-CBC/ECB 自动解密** — 自动获取密钥并解密分段
-- 📦 **纯 Go 合并** — 二进制拼接 / TS→MP4 remux / fMP4 合并，无需外部依赖
+- 📦 **可靠合并** — 默认 FFmpeg stream copy，不重新编码；Go 负责下载、解密、任务编排与取消
 - ⚡ **并发下载** — 可配置分段并发数，支持速度限制
 - 🎬 **多协议支持** — HLS / DASH / MSS 一站式解析
 - 📝 **字幕处理** — WebVTT / TTML 解析与格式转换
@@ -16,7 +16,28 @@
 - 🛠 **SDK 模式** — 可作为 Go 库嵌入 Wails / Electron / Flutter 等框架
 - 🖥 **交互模式** — 双击运行后逐步引导输入参数，无需记忆命令行
 - 📊 **实时进度** — 仿 N_m3u8DL-RE 风格进度条，显示速度/ETA/大小/百分比
-- 🔀 **DASH 自动混流** — 分离音视频流自动下载并混流为 MP4（纯 Go）
+- 🔀 **DASH 自动混流** — Go 下载分离音视频，FFmpeg 合并为 MP4；支持 init + fMP4 分片输入
+
+## Go 项目使用 v0.2.0
+
+```bash
+go get github.com/lullabyable/GOm3u8DL@v0.2.0
+go mod tidy
+```
+
+导入路径保持 `github.com/lullabyable/GOm3u8DL/pkg/m3u8dl` 不变。默认合并需要部署 FFmpeg；仅下载不需要。升级前请阅读下面的 MergeMode 数值迁移说明及 `docs/mcp-release-v0.2.0.md`。
+
+## 运行依赖与兼容性
+
+默认合并需要 FFmpeg。将其加入 PATH，或传入 `-ffmpeg-dir "C:\tools\ffmpeg\bin"`（也接受可执行文件路径）。程序不会自动安装或下载 FFmpeg。
+
+- 原分片由 Go 下载、解密；FFmpeg 只读取本地媒体输入，执行 `-c copy`。
+- 取消/失败保留下载分片，不发布半成品；日志保存在输出目录的 `*.ffmpeg-*.log`。
+- 已有目标文件不会被覆盖，请更换 `-save-name`。成功后才按 `del-after-done` 清理分片。
+- `ts2mp4` / `fmp4` 是实验性后端，`no` 仍是仅下载；现有配置若写了旧模式，请自行改成 `"merge": "ffmpeg"` 或用 CLI 显式覆盖。
+- SDK 零值 `MergeModeDefault=0` 现在使用 FFmpeg；`MergeModeBinary` 从旧值 0 改为 5。若持久化过数值 0 且希望保留二进制拼接，需迁移为 5；建议持久化模式名。其余已有模式数值不变。
+
+实现说明、限制和重试示例见 `docs/mcp-ffmpeg-backend.md`。分发 FFmpeg 时应检查所选构建的 LGPL/GPL 及相关许可义务。
 
 ## 安装
 
@@ -169,11 +190,11 @@ Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 当检测到 DASH MPD 中包含分离的音频和视频流时，会自动分别下载并混流为 MP4：
 
 ```bash
-# 自动检测并混流（纯 Go，无需 ffmpeg）
+# 自动检测并混流（默认 FFmpeg，需先安装）
 ./m3u8dl -url "https://example.com/manifest.mpd"
 
 # 指定合并模式
-./m3u8dl -url "https://example.com/manifest.mpd" -merge ts2mp4
+./m3u8dl -url "https://example.com/manifest.mpd" -merge ffmpeg
 ```
 
 ## 命令行参数
@@ -190,8 +211,8 @@ Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 |------|--------|------|
 | `-thread-num` | `8` | 分段下载并发数 |
 | `-max-speed` | `0`（不限速） | 最大下载速度（bytes/sec），支持人类可读格式如 `2M`、`500K` |
-| `-merge` | `ts2mp4` | 合并模式，可选：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并） |
-| `-ffmpeg-dir` | 空 | ffmpeg 路径（可执行文件或目录），`-merge ffmpeg` 时自动查找 |
+| `-merge` | `ffmpeg` | 合并模式，可选：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并） |
+| `-ffmpeg-dir` | 空 | FFmpeg 可执行文件或目录；为空时查找 PATH，缺失时在下载前报错 |
 | `-sv` | `best` | 流选择过滤器（见上方流选择器章节），为空时自动选择最高画质 |
 
 ### 输出控制
@@ -200,7 +221,7 @@ Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 |------|--------|------|
 | `-save-dir` | `/downloads` | 输出目录 |
 | `-save-name` | 自动生成（日期+时间戳） | 输出文件名（不含扩展名） |
-| `-tmp-dir` | `{save-dir}/` | 临时文件下载目录，下载完成后自动清理 |
+| `-tmp-dir` | `{save-dir}/` | 临时文件下载目录，仅合并成功且启用 del-after-done 时清理 |
 
 ### 解密相关
 
@@ -242,16 +263,16 @@ Windows 用户双击 `m3u8dl.exe` 即可打开此界面。
 | 模式 | 说明 | 依赖 | 输出格式 |
 |------|------|------|---------|
 | `binary` | 纯 Go 二进制拼接 TS 文件 | 无 | `.ts` |
-| `ts2mp4` | 纯 Go TS→MP4 remux（**推荐**） | 无 | `.mp4` |
-| `fmp4` | 纯 Go fragmented MP4 合并 | 无 | `.mp4` |
-| `ffmpeg` | 调用外部 ffmpeg 合并 | ffmpeg | `.mp4` |
+| `ts2mp4` | 实验性纯 Go TS→MP4 remux，复杂输入不推荐 | 无 | `.mp4` |
+| `fmp4` | 实验性纯 Go fragmented MP4 合并 | 无 | `.mp4` |
+| `ffmpeg` | **默认、推荐**，FFmpeg stream copy 重封装/混流 | FFmpeg | `.mp4` |
 | `no` | 仅下载不合并，保留切片文件和临时目录 | 无 | 切片原始格式 |
 
 ```bash
-# 使用 TS→MP4 remux（默认，纯 Go 无需外部工具）
+# 实验性纯 Go TS→MP4（仅限已验证输入）
 ./m3u8dl -url "..." -merge ts2mp4
 
-# 使用 ffmpeg 合并（处理 Dolby Vision 等特殊格式）
+# 默认、推荐：FFmpeg stream copy（不重新编码）
 ./m3u8dl -url "..." -merge ffmpeg
 ```
 
@@ -271,7 +292,7 @@ GOm3u8DL 支持 JSON 配置文件（非必须，省去每次填写长串参数�
   "max-speed": 0,
   "save-dir": "./downloads",
   "tmp-dir": "",
-  "merge": "ts2mp4",
+  "merge": "ffmpeg",
   "ffmpeg-dir": "/usr/bin/ffmpeg",
   "del-after-done": true,
   "mux-after-done": false,
@@ -293,9 +314,9 @@ GOm3u8DL 支持 JSON 配置文件（非必须，省去每次填写长串参数�
 | `max-speed` | int64 | `0` | 最大下载速度（bytes/sec），0=不限 |
 | `save-dir` | string | `.` | 默认输出目录 |
 | `tmp-dir` | string | `""` | 临时文件目录，为空时使用 save-dir |
-| `merge` | string | `"ts2mp4"` | 合并模式：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并，保留切片和临时目录） |
+| `merge` | string | `"ffmpeg"` | 合并模式：`binary` / `ts2mp4` / `fmp4` / `ffmpeg` / `no`（仅下载不合并，保留切片和临时目录） |
 | `ffmpeg-dir` | string | `""` | ffmpeg 可执行文件路径 |
-| `del-after-done` | bool | `false` | 下载完成后删除临时文件 |
+| `del-after-done` | bool | `false` | 配置/SDK 默认 false；CLI 无配置时默认 true，仅合并成功后删除临时分片 |
 | `mux-after-done` | bool | `false` | 下载完成后重新封装 |
 | `auto-subtitle-fix` | bool | `false` | 自动修复字幕时间轴 |
 | `headers` | object | `{}` | 默认 HTTP Headers |
@@ -365,6 +386,10 @@ func main() {
     // 下载（带进度回调）
     handler := m3u8dl.EventHandlerFunc{
         OnProgressFn: func(e m3u8dl.ProgressEvent) {
+            if e.Phase != "" {
+                fmt.Printf("合并 %s: %.1f%%，媒体 %.1fs，速度 %s\n", e.Phase, e.Percent, e.MediaTime, e.MergeSpeed)
+                return // Percent=-1 表示未知，不是分片下载百分比
+            }
             fmt.Printf("\r%.1f%% | %d KB/s | %d/%d segments",
                 e.Percent, e.Speed/1024, e.SegmentsDone, e.Segments)
         },
@@ -377,7 +402,7 @@ func main() {
         Stream:    &streams[0],
         OutputDir: "./output",
         SaveName:  "video",
-        MergeMode: model.MergeModeTS2MP4,
+        MergeMode: model.MergeModeFFmpeg,
     }, handler)
 }
 ```
@@ -436,10 +461,10 @@ result, err := engine.DownloadOnly(ctx, model.DownloadRequest{
 ### 下载后转为 MP4
 
 ```bash
-# 使用纯 Go TS→MP4 remux（默认）
+# 实验性纯 Go TS→MP4（非默认）
 ./m3u8dl -url "..." -merge ts2mp4
 
-# 使用 ffmpeg（处理特殊编码）
+# 默认、推荐：FFmpeg 重封装
 ./m3u8dl -url "..." -merge ffmpeg
 ```
 
@@ -499,20 +524,20 @@ GOm3u8DL/
 | `golang.org/x/crypto` | ChaCha20 解密 |
 | Go 标准库 | HTTP / AES / XML / 文件 IO |
 
-所有核心功能均为纯 Go 实现，无 CGO，支持交叉编译。
+Go 下载引擎无 CGO，可交叉编译；默认媒体合并在运行时需要目标平台的 FFmpeg 可执行文件。
 
 ## 与原项目对比
 
 | 维度 | N_m3u8DL-RE (C#) | GOm3u8DL (Go) |
 |------|------------------|---------------|
 | 运行时 | .NET Runtime | 单二进制，无依赖 |
-| 外部工具 | ffmpeg + mp4decrypt + ffprobe | 仅 ffmpeg 可选 |
-| TS→MP4 | 依赖 ffmpeg | 纯 Go (gomedia) |
+| 外部工具 | ffmpeg + mp4decrypt + ffprobe | 默认合并需要 FFmpeg；仅下载/实验性纯 Go 模式不需要 |
+| TS→MP4 | 依赖 ffmpeg | 默认 FFmpeg；保留实验性纯 Go 后端 |
 | DRM 解密 | 依赖 mp4decrypt | 纯 Go (mp4ff-decrypt) |
 | 进度获取 | Spectre.Console | ANSI 终端（仿原版风格） |
 | 并发模型 | 进程级 | goroutine 池（轻量） |
 | 嵌入性 | 无法嵌入 | 直接 import |
-| DASH 音视频分离 | 需手动处理 | 自动下载 + 纯 Go 混流 |
+| DASH 音视频分离 | 需手动处理 | Go 自动下载 + FFmpeg 混流 |
 | 交互模式 | Spectre.Console MultiSelection | 终端交互式引导 |
 
 ## 许可证

@@ -14,11 +14,12 @@ type DownloadResult struct {
 type MergeMode int
 
 const (
-	MergeModeBinary MergeMode = iota // binary concat TS (default, fastest)
-	MergeModeTS2MP4                  // pure Go TS→MP4 remux (gomedia)
-	MergeModeFMP4                    // pure Go fragmented MP4 (mp4ff)
-	MergeModeFFmpeg                  // external ffmpeg (Dolby Vision etc.)
-	MergeModeNo                      // download only, skip merge, keep segments + temp dir
+	MergeModeDefault MergeMode = iota // zero value: FFmpeg (recommended)
+	MergeModeTS2MP4                   // experimental pure Go TS→MP4 remux
+	MergeModeFMP4                     // experimental pure Go fragmented MP4
+	MergeModeFFmpeg                   // recommended FFmpeg stream-copy backend
+	MergeModeNo                       // download only, keep segments
+	MergeModeBinary                   // explicit raw binary concatenation (not MP4 remux)
 )
 
 // DownloadRequest configures a single download operation.
@@ -45,7 +46,7 @@ type DownloadRequest struct {
 
 	// Merge config.
 	MergeMode    MergeMode
-	FFmpegPath   string // only needed for MergeModeFFmpeg
+	FFmpegPath   string // executable/directory for default or FFmpeg mode; empty searches PATH
 	MuxAfterDone bool
 	DelAfterDone bool
 

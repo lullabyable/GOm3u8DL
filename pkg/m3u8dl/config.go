@@ -36,7 +36,7 @@ func DefaultConfig() *Config {
 		ThreadNum:       8,
 		MaxSpeed:        0,
 		SaveDir:         "/downloads",
-		Merge:           "ts2mp4",
+		Merge:           "ffmpeg",
 		FFmpegDir:       "",
 		DelAfterDone:    false,
 		MuxAfterDone:    false,
@@ -164,7 +164,7 @@ func parseMergeModeStr(s string) model.MergeMode {
 	case "no":
 		return model.MergeModeNo
 	default:
-		return model.MergeModeTS2MP4
+		return model.MergeModeFFmpeg
 	}
 }
 
